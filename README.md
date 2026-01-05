@@ -1,116 +1,137 @@
 # Baseball CLI (bcli)
 
-A command-line tool for querying pitcher statistics using SQLite.
+A command-line tool for querying MLB player statistics with advanced comparison features. Perfect for quick lookups while watching games!
 
 ## Setup
 
-### 1. Install Python Dependencies
+### 1. Clone the Repository
+
+```bash
+git clone <repo-url>
+cd bcli
+```
+
+The database (`baseball_stats.db`) is already included with 2022-2025 stats!
+
+### 2. Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Set Up Database
+### 3. Install CLI (Optional)
 
-Create the SQLite database and table:
-
-```bash
-python3 db_setup.py
-```
-
-This creates a `baseball_stats.db` file in your project directory.
-
-### 3. Load Data
-
-Place your CSV file in the project directory and load it:
+To use `bcli` instead of `python3 bcli.py`:
 
 ```bash
-python3 load_data.py pitcher_stats_2025.csv
-```
-
-Replace `pitcher_stats.csv` with the path to your CSV file.
-
-### 4. Make CLI Executable (Optional)
-
-```bash
-chmod +x bcli.py
+pip install -e .
 ```
 
 ## Usage
 
-### Query a player by name
+### Basic Player Lookup
 
 ```bash
-# Using first initial and last name
-python3 bcli.py l.webb
+# View all career stats
+bcli l.webb
+bcli bryan.woo
+bcli roki.s
 
-# Using full name
-python3 bcli.py logan.webb
+# View specific year
+bcli l.webb -y 24
+bcli bryan.woo -y 2023
+
+# Bold season totals indicate player led league
+# Italic season totals indicate player led both leagues
 ```
 
-### Query specific stats
+### Filter Specific Stats
 
 ```bash
-# Get WAR and ERA
-python3 bcli.py l.webb -s war -s era
+# Pitchers
+bcli l.webb -s era -s whip -s fip
 
-# Get multiple stats
-python3 bcli.py l.webb -s war -s era -s whip -s fip
+# Hitters
+bcli ohtani -s hr -s rbi -s ops
 ```
 
-### Available Stats
-
-All CSV columns are available, including:
-- WAR, W, L, W-L%, ERA
-- G, GS, GF, CG, SHO, SV
-- IP, H, R, ER, HR
-- BB, IBB, SO, HBP, BK, WP
-- BF, ERA+, FIP, WHIP
-- H9, HR9, BB9, SO9, SO/BB
-
-## Name Matching
-
-The CLI supports flexible name matching:
-
-- `l.webb` - Matches players with first name starting with "l" and last name containing "webb"
-- `logan.webb` - Matches players with first name starting with "logan" and last name containing "webb"
-
-If multiple players match, the CLI will show all matches and ask you to be more specific.
-
-## Example
+### Compare Two Players
 
 ```bash
-$ python3 bcli.py l.webb
+# Compare head-to-head (defaults to 2025)
+bcli judge -c ohtani
 
-Logan Webb - SFG
-==================================================
-WAR: 3.8
-W-L: 15-11
-ERA: 3.22
-IP: 207.0
-SO: 224
-WHIP: 1.237
-FIP: 2.60
+# Compare specific year
+bcli l.webb -y 24 -c verlander
 
-$ python3 bcli.py l.webb -s war -s era -s fip
-
-Logan Webb - SFG
-==================================================
-WAR: 3.8
-ERA: 3.22
-FIP: 2.60
+# Compare specific stats
+bcli judge -c ohtani -s hr -s ops -s war
 ```
 
-## CSV Format
+### Compare to Team Average
 
-Your CSV should have the following columns:
+```bash
+# Compare to team average (all years)
+bcli l.webb -ct
+
+# Specific year
+bcli judge -y 24 -ct
+
+# Shows only rate stats (ERA, WHIP, BA, OBP, etc.)
+# Green = above average, Orange = below average
 ```
-Rk,Player,Age,Team,Lg,WAR,W,L,W-L%,ERA,G,GS,GF,CG,SHO,SV,IP,H,R,ER,HR,BB,IBB,SO,HBP,BK,WP,BF,ERA+,FIP,WHIP,H9,HR9,BB9,SO9,SO/BB,Awards,Player-additional
+
+### Compare to League Average
+
+```bash
+# Compare to league average
+bcli ohtani -cl
+
+# Specific year
+bcli l.webb -y 23 -cl
 ```
 
-## Distribution
+## Troubleshooting
 
-This CLI is portable! To share with others:
-1. Package the entire directory including `baseball_stats.db`
-2. Recipients only need Python 3 and to run `pip install -r requirements.txt`
-3. No database server setup required - SQLite runs locally
+### Multiple Players Found
+
+If you get a "Multiple players found" error:
+
+```bash
+$ bcli williams
+
+Error: Multiple hitters found matching 'williams':
+  - Luke Williams (ATL)
+  - Nick Williams (DET)
+```
+
+Be more specific:
+
+```bash
+$ bcli l.williams
+```
+
+### Comparison Restrictions
+
+- Cannot use `-c`, `-ct`, and `-cl` together (choose one comparison mode)
+- Cannot compare players of different types (pitcher vs hitter)
+- Cannot compare traded players (2TM/3TM) to team average (use `-cl` for league instead)
+
+## Data Sources
+
+Stats are from Baseball Reference for the 2022-2025 seasons. The database includes:
+- 4 years of player stats (pitchers and hitters)
+- 4 years of team aggregates
+- League averages for each year
+
+## Contributing
+
+To add more years of data:
+
+1. Export CSV from Baseball Reference
+2. Run: `python3 load_data.py your_file.csv YEAR`
+3. For team stats: Add CSVs and run `python3 load_team_stats.py`
+
+## License
+
+MIT
