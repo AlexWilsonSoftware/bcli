@@ -8,6 +8,27 @@ import unicodedata
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'baseball_stats.db')
 
+# Stat mapping constants
+STAT_MAPPING_HITTER = {
+    'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
+    'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
+    'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
+    'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
+    'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
+    'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
+}
+
+STAT_MAPPING_PITCHER = {
+    'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
+    'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
+    'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
+    'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
+    'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
+    'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
+    'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
+    'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
+}
+
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
 
@@ -227,6 +248,84 @@ def get_column_index(cursor, column_name):
     except ValueError:
         return None
 
+def get_column_names(cursor, table_name):
+    """Get column names for a table"""
+    cursor.execute(f"SELECT * FROM {table_name}_stats LIMIT 1")
+    return [desc[0] for desc in cursor.description]
+
+def parse_year_filter(year):
+    """Parse year string and return integer year, or None if invalid"""
+    if not year:
+        return None
+
+    if len(year) == 2 and year.isdigit():
+        return int(f"20{year}")
+    elif len(year) == 4 and year.isdigit():
+        return int(year)
+    else:
+        return None
+
+def normalize_stat_label(stat):
+    """Convert user-provided stat name to database column name and display label"""
+    stat_lower = stat.lower()
+
+    # Special case mappings
+    special_mappings = {
+        'w-l%': ('w_l_pct', 'W-L%'),
+        'so/bb': ('so_bb', 'SO/BB'),
+        'era+': ('era_plus', 'ERA+'),
+        'ops+': ('ops_plus', 'OPS+'),
+        'rbat+': ('rbat_plus', 'Rbat+'),
+        '2b': ('doubles', '2B'),
+        '3b': ('triples', '3B'),
+        'h/9': ('h9', 'H/9'),
+        'hr/9': ('hr9', 'HR/9'),
+        'bb/9': ('bb9', 'BB/9'),
+        'so/9': ('so9', 'SO/9'),
+    }
+
+    if stat_lower in special_mappings:
+        return special_mappings[stat_lower]
+
+    # Default: replace - and / with _
+    stat_key = stat_lower.replace('-', '_').replace('/', '_')
+    stat_label = stat.upper()
+    return stat_key, stat_label
+
+def get_player_team_info(matches, column_names):
+    """Extract team information for a player from their matches
+
+    Returns team string for display (e.g., 'NYY' or 'NYY, BOS')
+    """
+    if not matches:
+        return None
+
+    player_col_idx = column_names.index('player')
+    team_col_idx = column_names.index('team')
+    year_col_idx = column_names.index('year')
+
+    # Try to get 2025 season teams
+    season_2025 = [m for m in matches if m[year_col_idx] == 2025]
+
+    if season_2025:
+        teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+        if not teams:
+            teams = [season_2025[0][team_col_idx]]
+    else:
+        # Fall back to most recent year
+        most_recent_year = max(m[year_col_idx] for m in matches)
+        recent_matches = [m for m in matches if m[year_col_idx] == most_recent_year]
+        teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+        if not teams:
+            teams = [recent_matches[0][team_col_idx]]
+
+    return ', '.join(teams) if len(teams) > 1 else teams[0]
+
+def is_ohtani(player_name):
+    """Check if player is Shohei Ohtani"""
+    normalized_name = re.sub(r'[*#+]', '', player_name).strip().lower()
+    return 'shohei ohtani' in normalized_name
+
 def get_stat_category(stat_key):
     """Returns 'pitcher', 'hitter', or 'common' for a given stat key"""
     pitcher_only_stats = {
@@ -289,45 +388,22 @@ def get_full_team_name(abbr):
 
 def list_matching_players(cursor, matches, player_type):
     """List all unique matching players without showing full stats"""
-    cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
-    column_names = [desc[0] for desc in cursor.description]
+    column_names = get_column_names(cursor, player_type)
     player_col_idx = column_names.index('player')
-    team_col_idx = column_names.index('team')
-    year_col_idx = column_names.index('year')
 
     unique_players = set(match[player_col_idx] for match in matches)
 
     for player in sorted(unique_players):
         player_matches = [match for match in matches if match[player_col_idx] == player]
-
-        season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
-
-        if season_2025:
-            teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-            if not teams:
-                teams = [season_2025[0][team_col_idx]]
-        else:
-            most_recent_year = max(m[year_col_idx] for m in player_matches)
-            recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
-            teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-            if not teams:
-                teams = [recent_matches[0][team_col_idx]]
-
-        if len(teams) > 1:
-            click.echo(f"  - {player} ({', '.join(teams)})")
-        else:
-            click.echo(f"  - {player} ({teams[0]})")
+        team_info = get_player_team_info(player_matches, column_names)
+        click.echo(f"  - {player} ({team_info})")
 
 def render_player(cursor, matches, player_type, stats, year, comparison_mode=None):
-    cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
-    column_names = [desc[0] for desc in cursor.description]
+    column_names = get_column_names(cursor, player_type)
 
     if year:
-        if len(year) == 2 and year.isdigit():
-            year_filter = int(f"20{year}")
-        elif len(year) == 4 and year.isdigit():
-            year_filter = int(year)
-        else:
+        year_filter = parse_year_filter(year)
+        if year_filter is None:
             click.echo(f"Error: Invalid year format '{year}'. Use 2022 or 22.")
             return
 
@@ -344,31 +420,12 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
         unique_players = set(match[player_col_idx] for match in matches)
 
         if len(unique_players) > 1:
-            team_col_idx = get_column_index(cursor, 'team')
-            year_col_idx = get_column_index(cursor, 'year')
-
             click.echo(f"Error: Multiple {player_type}s found matching:")
 
             for player in sorted(unique_players):
                 player_matches = [match for match in matches if match[player_col_idx] == player]
-
-                season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
-
-                if season_2025:
-                    teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                    if not teams:
-                        teams = [season_2025[0][team_col_idx]]
-                else:
-                    most_recent_year = max(m[year_col_idx] for m in player_matches)
-                    recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
-                    teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                    if not teams:
-                        teams = [recent_matches[0][team_col_idx]]
-
-                if len(teams) > 1:
-                    click.echo(f"  - {player} ({', '.join(teams)})")
-                else:
-                    click.echo(f"  - {player} ({teams[0]})")
+                team_info = get_player_team_info(player_matches, column_names)
+                click.echo(f"  - {player} ({team_info})")
             return
 
     # Now we know there's only one player, print the header
@@ -386,43 +443,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
 
         # Add requested stats
         for stat in stats:
-            stat_lower = stat.lower()
-            if stat_lower == 'w-l%':
-                stat_key = 'w_l_pct'
-                stat_label = 'W-L%'
-            elif stat_lower == 'so/bb':
-                stat_key = 'so_bb'
-                stat_label = 'SO/BB'
-            elif stat_lower == 'era+':
-                stat_key = 'era_plus'
-                stat_label = 'ERA+'
-            elif stat_lower == 'ops+':
-                stat_key = 'ops_plus'
-                stat_label = 'OPS+'
-            elif stat_lower == 'rbat+':
-                stat_key = 'rbat_plus'
-                stat_label = 'Rbat+'
-            elif stat_lower == '2b':
-                stat_key = 'doubles'
-                stat_label = '2B'
-            elif stat_lower == '3b':
-                stat_key = 'triples'
-                stat_label = '3B'
-            elif stat_lower == 'h/9':
-                stat_key = 'h9'
-                stat_label = 'H/9'
-            elif stat_lower == 'hr/9':
-                stat_key = 'hr9'
-                stat_label = 'HR/9'
-            elif stat_lower == 'bb/9':
-                stat_key = 'bb9'
-                stat_label = 'BB/9'
-            elif stat_lower == 'so/9':
-                stat_key = 'so9'
-                stat_label = 'SO/9'
-            else:
-                stat_key = stat_lower.replace('-', '_').replace('/', '_')
-                stat_label = stat.upper()
+            stat_key, stat_label = normalize_stat_label(stat)
 
             # Check if this stat exists in the database
             if stat_key not in column_names:
@@ -470,25 +491,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
     # If comparison mode, filter stats early and fetch averages
     comparison_averages = {}
     if comparison_mode:
-        stat_mapping_hitter = {
-            'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
-            'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
-            'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
-            'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
-            'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
-            'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
-        }
-        stat_mapping_pitcher = {
-            'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
-            'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
-            'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
-            'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
-            'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
-            'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
-            'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
-            'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
-        }
-        stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+        stat_mapping = STAT_MAPPING_PITCHER if player_type == 'pitcher' else STAT_MAPPING_HITTER
 
         team_table = 'team_pitcher_stats' if player_type == 'pitcher' else 'team_hitter_stats'
         years = set(dict(zip(column_names, m)).get('year') for m in matches)
@@ -609,25 +612,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
 
         # In comparison mode, account for the average values in stat columns
         if comparison_mode and comparison_averages and key not in ['year', 'age', 'team', 'lg', 'awards']:
-            stat_mapping_hitter = {
-                'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
-                'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
-                'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
-                'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
-                'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
-                'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
-            }
-            stat_mapping_pitcher = {
-                'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
-                'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
-                'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
-                'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
-                'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
-                'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
-                'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
-                'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
-            }
-            mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+            mapping = STAT_MAPPING_PITCHER if player_type == 'pitcher' else STAT_MAPPING_HITTER
             avg_key = mapping.get(key)
             if avg_key:
                 for yr, avg_dict in comparison_averages.items():
@@ -708,25 +693,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
     league_leaders = calculate_yearly_league_leaders()
 
     # Get stat_mapping for use in comparison formatting
-    stat_mapping_hitter = {
-        'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
-        'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
-        'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
-        'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
-        'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
-        'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
-    }
-    stat_mapping_pitcher = {
-        'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
-        'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
-        'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
-        'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
-        'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
-        'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
-        'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
-        'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
-    }
-    stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+    stat_mapping = STAT_MAPPING_PITCHER if player_type == 'pitcher' else STAT_MAPPING_HITTER
 
     header_parts = []
     for idx, (label, key) in enumerate(all_stats):
@@ -745,27 +712,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
             avg_dict = comparison_averages[year]
 
             # Map player stat keys to team stat keys
-            stat_mapping_hitter = {
-                'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
-                'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
-                'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
-                'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
-                'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
-                'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
-            }
-
-            stat_mapping_pitcher = {
-                'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
-                'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
-                'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
-                'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
-                'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
-                'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
-                'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
-                'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
-            }
-
-            stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+            stat_mapping = STAT_MAPPING_PITCHER if player_type == 'pitcher' else STAT_MAPPING_HITTER
             avg_key = stat_mapping.get(stat_key)
 
             if avg_key:
@@ -946,67 +893,13 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
 def compare_to_average_display(player_dict, avg_dict, player_name, comparison_name, year, player_type, stats, is_league):
     """Display player stats compared to team/league average with green highlighting"""
     # Map player stats to team stats (different column names)
-    stat_mapping_hitter = {
-        'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
-        'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
-        'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
-        'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
-        'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
-        'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
-    }
-
-    stat_mapping_pitcher = {
-        'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
-        'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
-        'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
-        'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
-        'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
-        'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
-        'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
-        'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
-    }
-
-    stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+    stat_mapping = STAT_MAPPING_PITCHER if player_type == 'pitcher' else STAT_MAPPING_HITTER
 
     # Determine which stats to display
     if stats:
         stat_list = []
         for stat in stats:
-            stat_lower = stat.lower()
-            if stat_lower == 'w-l%':
-                stat_key = 'w_l_pct'
-                stat_label = 'W-L%'
-            elif stat_lower == 'so/bb':
-                stat_key = 'so_bb'
-                stat_label = 'SO/BB'
-            elif stat_lower == 'era+':
-                stat_key = 'era_plus'
-                stat_label = 'ERA+'
-            elif stat_lower == 'ops+':
-                stat_key = 'ops_plus'
-                stat_label = 'OPS+'
-            elif stat_lower == '2b':
-                stat_key = 'doubles'
-                stat_label = '2B'
-            elif stat_lower == '3b':
-                stat_key = 'triples'
-                stat_label = '3B'
-            elif stat_lower == 'h/9':
-                stat_key = 'h9'
-                stat_label = 'H/9'
-            elif stat_lower == 'hr/9':
-                stat_key = 'hr9'
-                stat_label = 'HR/9'
-            elif stat_lower == 'bb/9':
-                stat_key = 'bb9'
-                stat_label = 'BB/9'
-            elif stat_lower == 'so/9':
-                stat_key = 'so9'
-                stat_label = 'SO/9'
-            else:
-                stat_key = stat_lower.replace('-', '_').replace('/', '_')
-                stat_label = stat.upper()
-
+            stat_key, stat_label = normalize_stat_label(stat)
             if stat_key in stat_mapping:
                 stat_list.append((stat_label, stat_key))
     else:
@@ -1107,15 +1000,11 @@ def compare_to_team(cursor, player_name, stats, year):
 
     if pitcher_matches and hitter_matches:
         # Check if this is Shohei Ohtani
-        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
-        column_names = [desc[0] for desc in cursor.description]
+        column_names = get_column_names(cursor, 'pitcher')
         player_col_idx = column_names.index('player')
         first_pitcher = pitcher_matches[0]
-        player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-        is_ohtani = 'shohei ohtani' in player_name_normalized
-
-        if is_ohtani:
+        if is_ohtani(first_pitcher[player_col_idx]):
             click.echo("Error: Ohtani is a two-way player. Team comparison not supported for two-way players.")
             return
 
@@ -1154,15 +1043,11 @@ def compare_to_league(cursor, player_name, stats, year):
 
     if pitcher_matches and hitter_matches:
         # Check if this is Shohei Ohtani
-        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
-        column_names = [desc[0] for desc in cursor.description]
+        column_names = get_column_names(cursor, 'pitcher')
         player_col_idx = column_names.index('player')
         first_pitcher = pitcher_matches[0]
-        player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-        is_ohtani = 'shohei ohtani' in player_name_normalized
-
-        if is_ohtani:
+        if is_ohtani(first_pitcher[player_col_idx]):
             click.echo("Error: Ohtani is a two-way player. League comparison not supported for two-way players.")
             return
 
@@ -1213,11 +1098,8 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
     if not year:
         year_filter = 2025
     else:
-        if len(year) == 2 and year.isdigit():
-            year_filter = int(f"20{year}")
-        elif len(year) == 4 and year.isdigit():
-            year_filter = int(year)
-        else:
+        year_filter = parse_year_filter(year)
+        if year_filter is None:
             click.echo(f"Error: Invalid year format '{year}'. Use 2022 or 22.")
             return
 
@@ -1249,51 +1131,21 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
     player_col_idx = column_names.index('player')
     unique_players1 = set(match[player_col_idx] for match in player1_matches)
     if len(unique_players1) > 1:
-        team_col_idx = column_names.index('team')
-        year_col_idx = column_names.index('year')
         click.echo(f"Error: Multiple {player1_type}s found matching '{player1_name}':")
         for player in sorted(unique_players1):
             player_matches = [match for match in player1_matches if match[player_col_idx] == player]
-            season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
-            if season_2025:
-                teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                if not teams:
-                    teams = [season_2025[0][team_col_idx]]
-            else:
-                most_recent_year = max(m[year_col_idx] for m in player_matches)
-                recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
-                teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                if not teams:
-                    teams = [recent_matches[0][team_col_idx]]
-            if len(teams) > 1:
-                click.echo(f"  - {player} ({', '.join(teams)})")
-            else:
-                click.echo(f"  - {player} ({teams[0]})")
+            team_info = get_player_team_info(player_matches, column_names)
+            click.echo(f"  - {player} ({team_info})")
         return
 
     # Check for multiple players for player 2
     unique_players2 = set(match[player_col_idx] for match in player2_matches)
     if len(unique_players2) > 1:
-        team_col_idx = column_names.index('team')
-        year_col_idx = column_names.index('year')
         click.echo(f"Error: Multiple {player2_type}s found matching '{player2_name}':")
         for player in sorted(unique_players2):
             player_matches = [match for match in player2_matches if match[player_col_idx] == player]
-            season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
-            if season_2025:
-                teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                if not teams:
-                    teams = [season_2025[0][team_col_idx]]
-            else:
-                most_recent_year = max(m[year_col_idx] for m in player_matches)
-                recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
-                teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                if not teams:
-                    teams = [recent_matches[0][team_col_idx]]
-            if len(teams) > 1:
-                click.echo(f"  - {player} ({', '.join(teams)})")
-            else:
-                click.echo(f"  - {player} ({teams[0]})")
+            team_info = get_player_team_info(player_matches, column_names)
+            click.echo(f"  - {player} ({team_info})")
         return
 
     # Filter by year
@@ -1343,44 +1195,7 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
         # Custom stats
         stat_list = []
         for stat in stats:
-            stat_lower = stat.lower()
-            if stat_lower == 'w-l%':
-                stat_key = 'w_l_pct'
-                stat_label = 'W-L%'
-            elif stat_lower == 'so/bb':
-                stat_key = 'so_bb'
-                stat_label = 'SO/BB'
-            elif stat_lower == 'era+':
-                stat_key = 'era_plus'
-                stat_label = 'ERA+'
-            elif stat_lower == 'ops+':
-                stat_key = 'ops_plus'
-                stat_label = 'OPS+'
-            elif stat_lower == 'rbat+':
-                stat_key = 'rbat_plus'
-                stat_label = 'Rbat+'
-            elif stat_lower == '2b':
-                stat_key = 'doubles'
-                stat_label = '2B'
-            elif stat_lower == '3b':
-                stat_key = 'triples'
-                stat_label = '3B'
-            elif stat_lower == 'h/9':
-                stat_key = 'h9'
-                stat_label = 'H/9'
-            elif stat_lower == 'hr/9':
-                stat_key = 'hr9'
-                stat_label = 'HR/9'
-            elif stat_lower == 'bb/9':
-                stat_key = 'bb9'
-                stat_label = 'BB/9'
-            elif stat_lower == 'so/9':
-                stat_key = 'so9'
-                stat_label = 'SO/9'
-            else:
-                stat_key = stat_lower.replace('-', '_').replace('/', '_')
-                stat_label = stat.upper()
-
+            stat_key, stat_label = normalize_stat_label(stat)
             if stat_key in column_names:
                 stat_list.append((stat_label, stat_key))
     else:
@@ -1477,15 +1292,11 @@ def display_platoon_splits(cursor, player_name, year, stats):
     # Determine player type
     if pitcher_matches and hitter_matches:
         # Check if this is Shohei Ohtani
-        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
-        column_names = [desc[0] for desc in cursor.description]
+        column_names = get_column_names(cursor, 'pitcher')
         player_col_idx = column_names.index('player')
         first_pitcher = pitcher_matches[0]
-        player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-        is_ohtani = 'shohei ohtani' in player_name_normalized
-
-        if is_ohtani:
+        if is_ohtani(first_pitcher[player_col_idx]):
             click.echo(f"Error: Ohtani is a two-way player. Platoon splits not yet supported for two-way players.")
             return
 
@@ -2288,20 +2099,7 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
 
                 for player in sorted(unique_pitchers):
                     player_matches_filtered = [match for match in pitcher_matches if re.sub(r'[*#+]', '', match[player_col_idx]).strip() == player]
-                    season_2025 = [m for m in player_matches_filtered if m[year_col_idx] == 2025]
-
-                    if season_2025:
-                        teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                        if not teams:
-                            teams = [season_2025[0][team_col_idx]]
-                    else:
-                        most_recent_year = max(m[year_col_idx] for m in player_matches_filtered)
-                        recent_matches = [m for m in player_matches_filtered if m[year_col_idx] == most_recent_year]
-                        teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                        if not teams:
-                            teams = [recent_matches[0][team_col_idx]]
-
-                    team_str = ', '.join(teams) if len(teams) > 1 else teams[0]
+                    team_str = get_player_team_info(player_matches_filtered, column_names)
                     choices.append((player, 'pitcher', team_str, player_matches_filtered))
 
             if hitter_matches:
@@ -2313,20 +2111,7 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
 
                 for player in sorted(unique_hitters):
                     player_matches_filtered = [match for match in hitter_matches if re.sub(r'[*#+]', '', match[player_col_idx]).strip() == player]
-                    season_2025 = [m for m in player_matches_filtered if m[year_col_idx] == 2025]
-
-                    if season_2025:
-                        teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                        if not teams:
-                            teams = [season_2025[0][team_col_idx]]
-                    else:
-                        most_recent_year = max(m[year_col_idx] for m in player_matches_filtered)
-                        recent_matches = [m for m in player_matches_filtered if m[year_col_idx] == most_recent_year]
-                        teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
-                        if not teams:
-                            teams = [recent_matches[0][team_col_idx]]
-
-                    team_str = ', '.join(teams) if len(teams) > 1 else teams[0]
+                    team_str = get_player_team_info(player_matches_filtered, column_names)
                     choices.append((player, 'hitter', team_str, player_matches_filtered))
 
             # Display choices
@@ -2371,48 +2156,18 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
 
         if pitcher_matches and hitter_matches:
             # Check if this is Shohei Ohtani (only true two-way player)
-            cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
-            column_names = [desc[0] for desc in cursor.description]
+            column_names = get_column_names(cursor, 'pitcher')
             player_col_idx = column_names.index('player')
             first_pitcher = pitcher_matches[0]
-            player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-            is_ohtani = 'shohei ohtani' in player_name_normalized
-
-            if is_ohtani:
+            if is_ohtani(first_pitcher[player_col_idx]):
                 # For Ohtani, show both pitching and hitting stats
                 if stats:
                     show_pitcher = False
                     show_hitter = False
 
                     for stat in stats:
-                        stat_lower = stat.lower()
-                        # Normalize stat names
-                        if stat_lower == 'w-l%':
-                            stat_key = 'w_l_pct'
-                        elif stat_lower == 'so/bb':
-                            stat_key = 'so_bb'
-                        elif stat_lower == 'era+':
-                            stat_key = 'era_plus'
-                        elif stat_lower == 'ops+':
-                            stat_key = 'ops_plus'
-                        elif stat_lower == 'rbat+':
-                            stat_key = 'rbat_plus'
-                        elif stat_lower == '2b':
-                            stat_key = 'doubles'
-                        elif stat_lower == '3b':
-                            stat_key = 'triples'
-                        elif stat_lower == 'h/9':
-                            stat_key = 'h9'
-                        elif stat_lower == 'hr/9':
-                            stat_key = 'hr9'
-                        elif stat_lower == 'bb/9':
-                            stat_key = 'bb9'
-                        elif stat_lower == 'so/9':
-                            stat_key = 'so9'
-                        else:
-                            stat_key = stat_lower.replace('-', '_').replace('/', '_')
-
+                        stat_key, _ = normalize_stat_label(stat)
                         category = get_stat_category(stat_key)
                         if category == 'pitcher':
                             show_pitcher = True
