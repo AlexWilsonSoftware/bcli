@@ -205,9 +205,42 @@ def create_tables():
         CREATE INDEX IF NOT EXISTS idx_team_pitcher_tm ON team_pitcher_stats (tm)
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS batter_pitcher_matchups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batter_name TEXT NOT NULL,
+            batter_mlb_id INTEGER NOT NULL,
+            pitcher_name TEXT NOT NULL,
+            pitcher_mlb_id INTEGER NOT NULL,
+            year TEXT,
+            games INTEGER,
+            pa INTEGER,
+            ab INTEGER,
+            h INTEGER,
+            doubles INTEGER,
+            triples INTEGER,
+            hr INTEGER,
+            rbi INTEGER,
+            bb INTEGER,
+            so INTEGER,
+            hbp INTEGER,
+            ibb INTEGER,
+            ba REAL,
+            obp REAL,
+            slg REAL,
+            ops REAL,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(batter_name, pitcher_name, year)
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_matchup_lookup ON batter_pitcher_matchups (batter_name, pitcher_name)
+    ''')
+
     conn.commit()
     print(f"Database created at: {DB_PATH}")
-    print("Tables 'pitcher_stats', 'hitter_stats', 'team_pitcher_stats', and 'team_hitter_stats' created successfully")
+    print("Tables 'pitcher_stats', 'hitter_stats', 'team_pitcher_stats', 'team_hitter_stats', and 'batter_pitcher_matchups' created successfully")
 
     cursor.close()
     conn.close()

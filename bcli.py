@@ -3,6 +3,7 @@ import click
 import sqlite3
 import os
 import re
+import mlb_api
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'baseball_stats.db')
 
@@ -1234,6 +1235,260 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
 
     click.echo()
 
+def handle_versus_matchup(cursor, player1_name, player2_name, year_filter):
+    """Handle batter vs pitcher matchup display"""
+    # Look up both players in our database to understand their types
+    pitcher1_matches, hitter1_matches = find_player(cursor, player1_name)
+    pitcher2_matches, hitter2_matches = find_player(cursor, player2_name)
+
+    # Check if players were found
+    if not pitcher1_matches and not hitter1_matches:
+        click.echo(f"Error: No players found matching '{player1_name}'")
+        return
+    if not pitcher2_matches and not hitter2_matches:
+        click.echo(f"Error: No players found matching '{player2_name}'")
+        return
+
+    # Determine player types
+    player1_is_pitcher = bool(pitcher1_matches)
+    player1_is_hitter = bool(hitter1_matches)
+    player2_is_pitcher = bool(pitcher2_matches)
+    player2_is_hitter = bool(hitter2_matches)
+
+    # Get full player names from database
+    cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+    column_names = [desc[0] for desc in cursor.description]
+    player_col_idx = column_names.index('player')
+
+    if pitcher1_matches or hitter1_matches:
+        matches1 = pitcher1_matches if pitcher1_matches else hitter1_matches
+        player1_full_name = matches1[0][player_col_idx]
+    else:
+        player1_full_name = player1_name
+
+    if pitcher2_matches or hitter2_matches:
+        matches2 = pitcher2_matches if pitcher2_matches else hitter2_matches
+        player2_full_name = matches2[0][player_col_idx]
+    else:
+        player2_full_name = player2_name
+
+    # Clean names for API lookup (remove asterisks and other special characters from Baseball Reference)
+    def clean_player_name(name):
+        # Remove * # + and other special characters that Baseball Reference uses
+        return re.sub(r'[*#+]', '', name).strip()
+
+    player1_clean_name = clean_player_name(player1_full_name)
+    player2_clean_name = clean_player_name(player2_full_name)
+
+    # Determine batter and pitcher roles
+    batter_full_name = None
+    pitcher_full_name = None
+    batter_clean_name = None
+    pitcher_clean_name = None
+
+    if player1_is_hitter and not player1_is_pitcher and player2_is_pitcher:
+        # Player 1 is only a hitter, Player 2 is pitcher
+        batter_full_name = player1_full_name
+        batter_clean_name = player1_clean_name
+        pitcher_full_name = player2_full_name
+        pitcher_clean_name = player2_clean_name
+    elif player1_is_pitcher and player2_is_hitter and not player2_is_pitcher:
+        # Player 1 is pitcher, Player 2 is only a hitter
+        batter_full_name = player2_full_name
+        batter_clean_name = player2_clean_name
+        pitcher_full_name = player1_full_name
+        pitcher_clean_name = player1_clean_name
+    elif player1_is_hitter and player2_is_pitcher and not player2_is_hitter:
+        # Player 1 can hit, Player 2 is only a pitcher
+        batter_full_name = player1_full_name
+        batter_clean_name = player1_clean_name
+        pitcher_full_name = player2_full_name
+        pitcher_clean_name = player2_clean_name
+    elif player1_is_pitcher and not player1_is_hitter and player2_is_hitter:
+        # Player 1 is only a pitcher, Player 2 can hit
+        batter_full_name = player2_full_name
+        batter_clean_name = player2_clean_name
+        pitcher_full_name = player1_full_name
+        pitcher_clean_name = player1_clean_name
+    elif player1_is_hitter and player1_is_pitcher and player2_is_hitter and player2_is_pitcher:
+        # Both are two-way players - ask user
+        click.echo(f"Both {player1_full_name} and {player2_full_name} are two-way players.")
+        click.echo(f"Who is batting?")
+        click.echo(f"  1. {player1_full_name}")
+        click.echo(f"  2. {player2_full_name}")
+        choice = click.prompt("Enter 1 or 2", type=int)
+        if choice == 1:
+            batter_full_name = player1_full_name
+            batter_clean_name = player1_clean_name
+            pitcher_full_name = player2_full_name
+            pitcher_clean_name = player2_clean_name
+        else:
+            batter_full_name = player2_full_name
+            batter_clean_name = player2_clean_name
+            pitcher_full_name = player1_full_name
+            pitcher_clean_name = player1_clean_name
+    else:
+        click.echo(f"Error: Could not determine batter/pitcher roles for '{player1_name}' vs '{player2_name}'")
+        click.echo(f"  {player1_name}: {'pitcher' if player1_is_pitcher else ''} {'hitter' if player1_is_hitter else ''}")
+        click.echo(f"  {player2_name}: {'pitcher' if player2_is_pitcher else ''} {'hitter' if player2_is_hitter else ''}")
+        return
+
+    # Check cache first (fast - no API calls needed)
+    # Try both cleaned and original names since we may have cached with either
+    cached_stats = None
+    for batter_search in [batter_clean_name, batter_full_name]:
+        for pitcher_search in [pitcher_clean_name, pitcher_full_name]:
+            cached_stats = mlb_api.get_cached_matchup(cursor, batter_search, pitcher_search)
+            if cached_stats:
+                # Use the cached names for display
+                render_matchup_stats(batter_search, pitcher_search, cached_stats, year_filter)
+                return
+
+    # Not cached - need to look up MLB IDs and fetch from API (use cleaned names)
+    batter_info = mlb_api.lookup_player(batter_clean_name)
+    pitcher_info = mlb_api.lookup_player(pitcher_clean_name)
+
+    if not batter_info:
+        click.echo(f"Error: Could not find MLB ID for '{batter_clean_name}'")
+        return
+    if not pitcher_info:
+        click.echo(f"Error: Could not find MLB ID for '{pitcher_clean_name}'")
+        return
+
+    batter_api_name = batter_info['fullName']
+    pitcher_api_name = pitcher_info['fullName']
+    batter_id = batter_info['id']
+    pitcher_id = pitcher_info['id']
+
+    # Fetch from API
+    click.echo(f"Fetching matchup data from MLB Stats API...")
+    stats_list = mlb_api.fetch_batter_vs_pitcher_stats(batter_id, pitcher_id)
+
+    if not stats_list:
+        click.echo(f"No matchup data found for {batter_api_name} vs {pitcher_api_name}")
+        return
+
+    # Cache the results
+    mlb_api.cache_matchup(cursor, batter_api_name, batter_id, pitcher_api_name, pitcher_id, stats_list)
+
+    # Display the stats
+    render_matchup_stats(batter_api_name, pitcher_api_name, stats_list, year_filter)
+
+def render_matchup_stats(batter_name, pitcher_name, stats_list, year_filter):
+    """Render batter vs pitcher matchup stats"""
+    # Filter stats based on year_filter
+    if year_filter and year_filter.lower() == 'all':
+        # Show year-by-year breakdown
+        display_stats = [s for s in stats_list if s['year'] != 'career']
+        career_total = [s for s in stats_list if s['year'] == 'career']
+    elif year_filter:
+        # Show specific year
+        if len(year_filter) == 2 and year_filter.isdigit():
+            year_str = f"20{year_filter}"
+        else:
+            year_str = year_filter
+
+        display_stats = [s for s in stats_list if s['year'] == year_str]
+        career_total = []
+
+        if not display_stats:
+            click.echo(f"No matchup data found for {year_str}")
+            return
+    else:
+        # Show career totals only (default)
+        display_stats = [s for s in stats_list if s['year'] == 'career']
+        career_total = []
+
+    if not display_stats:
+        click.echo(f"No matchup data found")
+        return
+
+    # Determine title
+    if year_filter and year_filter.lower() == 'all':
+        title = f"{batter_name} vs {pitcher_name} (Career Breakdown)"
+    elif year_filter:
+        if len(year_filter) == 2 and year_filter.isdigit():
+            year_display = f"20{year_filter}"
+        else:
+            year_display = year_filter
+        title = f"{batter_name} vs {pitcher_name} ({year_display})"
+    else:
+        title = f"{batter_name} vs {pitcher_name} (Career)"
+
+    click.echo(f"\n{title}")
+    click.echo("=" * 80)
+
+    # Display format
+    if year_filter and year_filter.lower() == 'all':
+        # Year-by-year table - similar to regular player stats
+        all_stats = [
+            ('Year', 'year'), ('G', 'games'), ('PA', 'pa'), ('AB', 'ab'),
+            ('H', 'h'), ('2B', 'doubles'), ('3B', 'triples'), ('HR', 'hr'),
+            ('RBI', 'rbi'), ('BB', 'bb'), ('SO', 'so'), ('HBP', 'hbp'),
+            ('IBB', 'ibb'), ('AVG', 'ba'), ('OBP', 'obp'), ('SLG', 'slg'), ('OPS', 'ops')
+        ]
+
+        # Calculate column widths based on header and data
+        col_widths = []
+        for label, key in all_stats:
+            max_width = len(label)
+            for stat in display_stats:
+                if key == 'year':
+                    val_str = str(stat[key])
+                elif key in ['ba', 'obp', 'slg', 'ops']:
+                    val_str = f"{stat[key]:.3f}" if stat[key] else '.000'
+                else:
+                    val_str = str(stat[key])
+                max_width = max(max_width, len(val_str))
+            col_widths.append(max_width)
+
+        # Print header
+        header_parts = []
+        for idx, (label, key) in enumerate(all_stats):
+            header_parts.append(label.ljust(col_widths[idx]))
+        click.echo("  ".join(header_parts))
+
+        # Print each year
+        for stat in display_stats:
+            row_parts = []
+            for idx, (label, key) in enumerate(all_stats):
+                if key == 'year':
+                    val = str(stat[key])
+                elif key in ['ba', 'obp', 'slg', 'ops']:
+                    val = f"{stat[key]:.3f}" if stat[key] else '.000'
+                else:
+                    val = str(stat[key])
+                row_parts.append(val.ljust(col_widths[idx]))
+            click.echo("  ".join(row_parts))
+
+    else:
+        # Single stat summary
+        stat = display_stats[0]
+        stat_labels = [
+            ('Games', stat['games']),
+            ('PA', stat['pa']),
+            ('AB', stat['ab']),
+            ('H', stat['h']),
+            ('2B', stat['doubles']),
+            ('3B', stat['triples']),
+            ('HR', stat['hr']),
+            ('RBI', stat['rbi']),
+            ('BB', stat['bb']),
+            ('HBP', stat['hbp']),
+            ('SO', stat['so']),
+            ('IBB', stat['ibb']),
+            ('AVG', f"{stat['ba']:.3f}" if stat['ba'] else '.000'),
+            ('OBP', f"{stat['obp']:.3f}" if stat['obp'] else '.000'),
+            ('SLG', f"{stat['slg']:.3f}" if stat['slg'] else '.000'),
+            ('OPS', f"{stat['ops']:.3f}" if stat['ops'] else '.000'),
+        ]
+
+        label_width = max(len(label) for label, _ in stat_labels)
+        for label, value in stat_labels:
+            click.echo(f"{label.ljust(label_width)}  {value}")
+
+    click.echo()
+
 @click.command()
 @click.argument('player_name')
 @click.option('-s', '--stats', multiple=True, help='Specific stats to display (e.g., war era)')
@@ -1241,14 +1496,22 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
 @click.option('-c', '--compare', help='Compare with another player')
 @click.option('-ct', '--compare-team', is_flag=True, help='Compare player to team average')
 @click.option('-cl', '--compare-league', is_flag=True, help='Compare player to league average')
-def main(player_name, stats, year, compare, compare_team, compare_league):
+@click.option('-v', '--versus', help='Show batter vs pitcher matchup stats')
+def main(player_name, stats, year, compare, compare_team, compare_league, versus):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         # Validate that conflicting flags aren't used together
-        if sum([bool(compare), compare_team, compare_league]) > 1:
-            click.echo("Error: Cannot use -c, -ct, and -cl together. Choose one comparison mode.")
+        if sum([bool(compare), compare_team, compare_league, bool(versus)]) > 1:
+            click.echo("Error: Cannot use -c, -ct, -cl, and -v together. Choose one comparison mode.")
+            return
+
+        # If versus flag is set, show batter vs pitcher matchup
+        if versus:
+            handle_versus_matchup(cursor, player_name, versus, year)
+            cursor.close()
+            conn.close()
             return
 
         # If compare flag is set, use comparison mode
