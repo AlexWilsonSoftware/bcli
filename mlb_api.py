@@ -196,3 +196,374 @@ def get_cached_matchup(cursor, batter_name, pitcher_name):
     except Exception as e:
         print(f"Error retrieving cached matchup: {e}")
         return []
+
+def fetch_platoon_splits(player_id, player_type, year=None, all_years=False):
+    """Fetch platoon splits (vs LHB/RHB for pitchers, vs LHP/RHP for hitters)
+
+    Args:
+        player_id: MLB player ID
+        player_type: 'pitcher' or 'hitter'
+        year: Optional year (defaults to career)
+        all_years: If True, fetch year-by-year splits
+
+    Returns:
+        If all_years is False: Dict with 'left' and 'right' keys
+        If all_years is True: List of dicts, one per year, each with 'year', 'left', 'right'
+    """
+    try:
+        url = f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats"
+
+        group = 'pitching' if player_type == 'pitcher' else 'hitting'
+        params = {
+            'stats': 'statSplits',
+            'group': group,
+            'sitCodes': 'vr,vl'  # vs Right, vs Left
+        }
+
+        if year and not all_years:
+            params['season'] = year
+
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if 'stats' not in data or len(data['stats']) == 0:
+            return None
+
+        splits = data['stats'][0].get('splits', [])
+
+        if not splits:
+            return None
+
+        if all_years:
+            # Fetch splits for each year (2022-2025)
+            years_data = {}
+            for yr in range(2022, 2026):
+                try:
+                    year_response = requests.get(url, params={**params, 'season': yr}, timeout=10)
+                    year_response.raise_for_status()
+                    year_data = year_response.json()
+
+                    if 'stats' not in year_data or len(year_data['stats']) == 0:
+                        continue
+
+                    year_splits = year_data['stats'][0].get('splits', [])
+                    if not year_splits:
+                        continue
+
+                    years_data[yr] = {}
+
+                    for split in year_splits:
+                        split_code = split.get('split', {}).get('code')
+                        stat = split.get('stat', {})
+
+                        # Parse batting average stats
+                        def parse_avg_stat(value):
+                            if not value or value == '-.--':
+                                return 0.0
+                            try:
+                                if value.startswith('.'):
+                                    return float('0' + value)
+                                return float(value)
+                            except (ValueError, TypeError):
+                                return 0.0
+
+                        if player_type == 'pitcher':
+                            split_data = {
+                                'pa': stat.get('battersFaced', 0),
+                                'ab': stat.get('atBats', 0),
+                                'h': stat.get('hits', 0),
+                                'doubles': stat.get('doubles', 0),
+                                'triples': stat.get('triples', 0),
+                                'hr': stat.get('homeRuns', 0),
+                                'bb': stat.get('baseOnBalls', 0),
+                                'so': stat.get('strikeOuts', 0),
+                                'ba': parse_avg_stat(stat.get('avg')),
+                                'obp': parse_avg_stat(stat.get('obp')),
+                                'slg': parse_avg_stat(stat.get('slg')),
+                                'ops': parse_avg_stat(stat.get('ops')),
+                                'ip': stat.get('inningsPitched', '0'),
+                                'whip': parse_avg_stat(stat.get('whip')),
+                                'era': parse_avg_stat(stat.get('earnedRunAverage')),
+                                'k9': parse_avg_stat(stat.get('strikeoutsPer9Inn')),
+                                'bb9': parse_avg_stat(stat.get('walksPer9Inn')),
+                            }
+                        else:
+                            split_data = {
+                                'pa': stat.get('plateAppearances', 0),
+                                'ab': stat.get('atBats', 0),
+                                'h': stat.get('hits', 0),
+                                'doubles': stat.get('doubles', 0),
+                                'triples': stat.get('triples', 0),
+                                'hr': stat.get('homeRuns', 0),
+                                'rbi': stat.get('rbi', 0),
+                                'bb': stat.get('baseOnBalls', 0),
+                                'so': stat.get('strikeOuts', 0),
+                                'ba': parse_avg_stat(stat.get('avg')),
+                                'obp': parse_avg_stat(stat.get('obp')),
+                                'slg': parse_avg_stat(stat.get('slg')),
+                                'ops': parse_avg_stat(stat.get('ops')),
+                            }
+
+                        if split_code == 'vl':
+                            years_data[yr]['left'] = split_data
+                        elif split_code == 'vr':
+                            years_data[yr]['right'] = split_data
+
+                except Exception:
+                    # Skip years with errors
+                    continue
+
+            # Convert to list format
+            result = []
+            for yr in sorted(years_data.keys()):
+                if 'left' in years_data[yr] and 'right' in years_data[yr]:
+                    result.append({
+                        'year': yr,
+                        'left': years_data[yr]['left'],
+                        'right': years_data[yr]['right']
+                    })
+
+            return result if result else None
+
+        result = {}
+
+        for split in splits:
+            split_code = split.get('split', {}).get('code')
+            stat = split.get('stat', {})
+
+            # Parse batting average stats
+            def parse_avg_stat(value):
+                if not value or value == '-.--':
+                    return 0.0
+                try:
+                    if value.startswith('.'):
+                        return float('0' + value)
+                    return float(value)
+                except (ValueError, TypeError):
+                    return 0.0
+
+            if player_type == 'pitcher':
+                # For pitchers: what batters hit against them
+                split_data = {
+                    'pa': stat.get('battersFaced', 0),
+                    'ab': stat.get('atBats', 0),
+                    'h': stat.get('hits', 0),
+                    'doubles': stat.get('doubles', 0),
+                    'triples': stat.get('triples', 0),
+                    'hr': stat.get('homeRuns', 0),
+                    'bb': stat.get('baseOnBalls', 0),
+                    'so': stat.get('strikeOuts', 0),
+                    'ba': parse_avg_stat(stat.get('avg')),
+                    'obp': parse_avg_stat(stat.get('obp')),
+                    'slg': parse_avg_stat(stat.get('slg')),
+                    'ops': parse_avg_stat(stat.get('ops')),
+                    'ip': stat.get('inningsPitched', '0'),
+                    'whip': parse_avg_stat(stat.get('whip')),
+                    'era': parse_avg_stat(stat.get('earnedRunAverage')),
+                    'k9': parse_avg_stat(stat.get('strikeoutsPer9Inn')),
+                    'bb9': parse_avg_stat(stat.get('walksPer9Inn')),
+                }
+            else:
+                # For hitters: their performance
+                split_data = {
+                    'pa': stat.get('plateAppearances', 0),
+                    'ab': stat.get('atBats', 0),
+                    'h': stat.get('hits', 0),
+                    'doubles': stat.get('doubles', 0),
+                    'triples': stat.get('triples', 0),
+                    'hr': stat.get('homeRuns', 0),
+                    'rbi': stat.get('rbi', 0),
+                    'bb': stat.get('baseOnBalls', 0),
+                    'so': stat.get('strikeOuts', 0),
+                    'ba': parse_avg_stat(stat.get('avg')),
+                    'obp': parse_avg_stat(stat.get('obp')),
+                    'slg': parse_avg_stat(stat.get('slg')),
+                    'ops': parse_avg_stat(stat.get('ops')),
+                }
+
+            if split_code == 'vl':
+                result['left'] = split_data
+            elif split_code == 'vr':
+                result['right'] = split_data
+
+        return result if result else None
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching platoon splits from API: {e}")
+        return None
+    except Exception as e:
+        print(f"Error processing platoon splits: {e}")
+        return None
+
+def cache_platoon_splits(cursor, player_name, player_id, player_type, splits_data, year=None, all_years=False):
+    """Cache platoon splits in database
+
+    Args:
+        cursor: Database cursor
+        player_name: Full player name
+        player_id: MLB player ID
+        player_type: 'pitcher' or 'hitter'
+        splits_data: Dict with 'left' and 'right' keys, or list of year dicts
+        year: Optional specific year
+        all_years: If True, splits_data is a list of year dicts
+    """
+    try:
+        if all_years:
+            # Cache multiple years
+            for year_data in splits_data:
+                yr = str(year_data['year'])
+
+                # Cache left split
+                left_stat = year_data['left']
+                cursor.execute('''
+                    INSERT OR REPLACE INTO platoon_splits (
+                        player_name, player_mlb_id, player_type, year, split_type,
+                        pa, ab, h, doubles, triples, hr, rbi, bb, so,
+                        ba, obp, slg, ops, ip, whip, era, k9, bb9, last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    player_name, player_id, player_type, yr, 'left',
+                    left_stat.get('pa', 0), left_stat.get('ab', 0), left_stat.get('h', 0),
+                    left_stat.get('doubles', 0), left_stat.get('triples', 0), left_stat.get('hr', 0),
+                    left_stat.get('rbi', 0), left_stat.get('bb', 0), left_stat.get('so', 0),
+                    left_stat.get('ba', 0.0), left_stat.get('obp', 0.0), left_stat.get('slg', 0.0),
+                    left_stat.get('ops', 0.0), left_stat.get('ip', '0'), left_stat.get('whip', 0.0),
+                    left_stat.get('era', 0.0), left_stat.get('k9', 0.0), left_stat.get('bb9', 0.0)
+                ))
+
+                # Cache right split
+                right_stat = year_data['right']
+                cursor.execute('''
+                    INSERT OR REPLACE INTO platoon_splits (
+                        player_name, player_mlb_id, player_type, year, split_type,
+                        pa, ab, h, doubles, triples, hr, rbi, bb, so,
+                        ba, obp, slg, ops, ip, whip, era, k9, bb9, last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    player_name, player_id, player_type, yr, 'right',
+                    right_stat.get('pa', 0), right_stat.get('ab', 0), right_stat.get('h', 0),
+                    right_stat.get('doubles', 0), right_stat.get('triples', 0), right_stat.get('hr', 0),
+                    right_stat.get('rbi', 0), right_stat.get('bb', 0), right_stat.get('so', 0),
+                    right_stat.get('ba', 0.0), right_stat.get('obp', 0.0), right_stat.get('slg', 0.0),
+                    right_stat.get('ops', 0.0), right_stat.get('ip', '0'), right_stat.get('whip', 0.0),
+                    right_stat.get('era', 0.0), right_stat.get('k9', 0.0), right_stat.get('bb9', 0.0)
+                ))
+        else:
+            # Cache single year or career
+            yr = str(year) if year else 'career'
+
+            # Cache left split
+            left_stat = splits_data['left']
+            cursor.execute('''
+                INSERT OR REPLACE INTO platoon_splits (
+                    player_name, player_mlb_id, player_type, year, split_type,
+                    pa, ab, h, doubles, triples, hr, rbi, bb, so,
+                    ba, obp, slg, ops, ip, whip, era, k9, bb9, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                player_name, player_id, player_type, yr, 'left',
+                left_stat.get('pa', 0), left_stat.get('ab', 0), left_stat.get('h', 0),
+                left_stat.get('doubles', 0), left_stat.get('triples', 0), left_stat.get('hr', 0),
+                left_stat.get('rbi', 0), left_stat.get('bb', 0), left_stat.get('so', 0),
+                left_stat.get('ba', 0.0), left_stat.get('obp', 0.0), left_stat.get('slg', 0.0),
+                left_stat.get('ops', 0.0), left_stat.get('ip', '0'), left_stat.get('whip', 0.0),
+                left_stat.get('era', 0.0), left_stat.get('k9', 0.0), left_stat.get('bb9', 0.0)
+            ))
+
+            # Cache right split
+            right_stat = splits_data['right']
+            cursor.execute('''
+                INSERT OR REPLACE INTO platoon_splits (
+                    player_name, player_mlb_id, player_type, year, split_type,
+                    pa, ab, h, doubles, triples, hr, rbi, bb, so,
+                    ba, obp, slg, ops, ip, whip, era, k9, bb9, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                player_name, player_id, player_type, yr, 'right',
+                right_stat.get('pa', 0), right_stat.get('ab', 0), right_stat.get('h', 0),
+                right_stat.get('doubles', 0), right_stat.get('triples', 0), right_stat.get('hr', 0),
+                right_stat.get('rbi', 0), right_stat.get('bb', 0), right_stat.get('so', 0),
+                right_stat.get('ba', 0.0), right_stat.get('obp', 0.0), right_stat.get('slg', 0.0),
+                right_stat.get('ops', 0.0), right_stat.get('ip', '0'), right_stat.get('whip', 0.0),
+                right_stat.get('era', 0.0), right_stat.get('k9', 0.0), right_stat.get('bb9', 0.0)
+            ))
+
+        cursor.connection.commit()
+    except Exception as e:
+        print(f"Error caching platoon splits: {e}")
+        cursor.connection.rollback()
+
+def get_cached_platoon_splits(cursor, player_name, year=None, all_years=False):
+    """Get cached platoon splits from database
+
+    Returns:
+        If all_years: List of year dicts with 'year', 'left', 'right'
+        Otherwise: Dict with 'left' and 'right' keys
+        None if not cached
+    """
+    try:
+        if all_years:
+            # Get all years (2022-2025)
+            years_data = []
+            for yr in range(2022, 2026):
+                cursor.execute('''
+                    SELECT split_type, pa, ab, h, doubles, triples, hr, rbi, bb, so,
+                           ba, obp, slg, ops, ip, whip, era, k9, bb9
+                    FROM platoon_splits
+                    WHERE player_name = ? AND year = ?
+                ''', (player_name, str(yr)))
+
+                rows = cursor.fetchall()
+                if len(rows) == 2:  # Must have both left and right
+                    year_splits = {'year': yr}
+                    for row in rows:
+                        split_data = {
+                            'pa': row[1], 'ab': row[2], 'h': row[3], 'doubles': row[4],
+                            'triples': row[5], 'hr': row[6], 'rbi': row[7], 'bb': row[8],
+                            'so': row[9], 'ba': row[10], 'obp': row[11], 'slg': row[12],
+                            'ops': row[13], 'ip': row[14], 'whip': row[15], 'era': row[16],
+                            'k9': row[17], 'bb9': row[18]
+                        }
+                        if row[0] == 'left':
+                            year_splits['left'] = split_data
+                        else:
+                            year_splits['right'] = split_data
+
+                    if 'left' in year_splits and 'right' in year_splits:
+                        years_data.append(year_splits)
+
+            return years_data if years_data else None
+        else:
+            # Get single year or career
+            yr = str(year) if year else 'career'
+            cursor.execute('''
+                SELECT split_type, pa, ab, h, doubles, triples, hr, rbi, bb, so,
+                       ba, obp, slg, ops, ip, whip, era, k9, bb9
+                FROM platoon_splits
+                WHERE player_name = ? AND year = ?
+            ''', (player_name, yr))
+
+            rows = cursor.fetchall()
+            if len(rows) != 2:
+                return None
+
+            result = {}
+            for row in rows:
+                split_data = {
+                    'pa': row[1], 'ab': row[2], 'h': row[3], 'doubles': row[4],
+                    'triples': row[5], 'hr': row[6], 'rbi': row[7], 'bb': row[8],
+                    'so': row[9], 'ba': row[10], 'obp': row[11], 'slg': row[12],
+                    'ops': row[13], 'ip': row[14], 'whip': row[15], 'era': row[16],
+                    'k9': row[17], 'bb9': row[18]
+                }
+                if row[0] == 'left':
+                    result['left'] = split_data
+                else:
+                    result['right'] = split_data
+
+            return result if 'left' in result and 'right' in result else None
+    except Exception as e:
+        print(f"Error retrieving cached platoon splits: {e}")
+        return None

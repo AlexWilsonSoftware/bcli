@@ -1235,6 +1235,388 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
 
     click.echo()
 
+def display_platoon_splits(cursor, player_name, year, stats):
+    """Display platoon splits for a player"""
+    pitcher_matches, hitter_matches = find_player(cursor, player_name)
+
+    if not pitcher_matches and not hitter_matches:
+        click.echo(f"Error: No players found matching '{player_name}'")
+        return
+
+    # Determine player type
+    if pitcher_matches and hitter_matches:
+        click.echo(f"Error: {player_name} is a two-way player. Platoon splits not yet supported for two-way players.")
+        return
+
+    player_type = 'pitcher' if pitcher_matches else 'hitter'
+    matches = pitcher_matches if pitcher_matches else hitter_matches
+
+    # Check for multiple players
+    cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
+    column_names = [desc[0] for desc in cursor.description]
+    player_col_idx = column_names.index('player')
+    unique_players = set(match[player_col_idx] for match in matches)
+
+    if len(unique_players) > 1:
+        click.echo(f"Error: Multiple {player_type}s found matching '{player_name}'")
+        return
+
+    full_name = matches[0][player_col_idx]
+    clean_name = re.sub(r'[*#+]', '', full_name).strip()
+
+    # Look up MLB ID
+    player_info = mlb_api.lookup_player(clean_name)
+    if not player_info:
+        click.echo(f"Error: Could not find MLB ID for '{clean_name}'")
+        return
+
+    player_id = player_info['id']
+    api_name = player_info['fullName']
+
+    # Parse year
+    year_filter = None
+    all_years = False
+    if year:
+        if year.lower() == 'all':
+            all_years = True
+        elif len(year) == 2 and year.isdigit():
+            year_filter = int(f"20{year}")
+        elif len(year) == 4 and year.isdigit():
+            year_filter = int(year)
+        else:
+            click.echo(f"Error: Invalid year format '{year}'. Use 2022, 22, or all.")
+            return
+
+    # Check cache first
+    cached_splits = mlb_api.get_cached_platoon_splits(cursor, api_name, year_filter, all_years)
+
+    if cached_splits:
+        splits = cached_splits
+    else:
+        # Fetch from API
+        click.echo(f"Fetching platoon splits from MLB Stats API...")
+        splits = mlb_api.fetch_platoon_splits(player_id, player_type, year_filter, all_years)
+
+        if not splits:
+            year_str = f" for {year_filter}" if year_filter else ""
+            click.echo(f"No platoon split data found for {api_name}{year_str}")
+            return
+
+        # Cache the results
+        mlb_api.cache_platoon_splits(cursor, api_name, player_id, player_type, splits, year_filter, all_years)
+
+    if all_years:
+        # Year-by-year display
+        if not isinstance(splits, list) or len(splits) == 0:
+            click.echo(f"No platoon split data found for {api_name}")
+            return
+    else:
+        # Single year/career display
+        if 'left' not in splits or 'right' not in splits:
+            year_str = f" for {year_filter}" if year_filter else ""
+            click.echo(f"No platoon split data found for {api_name}{year_str}")
+            return
+
+    # Handle year-by-year display
+    if all_years:
+        # Display year-by-year platoon splits
+        year_str = " (Year-by-Year)"
+        click.echo(f"\n{api_name} - Platoon Splits{year_str}")
+        click.echo("=" * 80)
+
+        # Determine columns based on player type
+        if player_type == 'pitcher':
+            if stats:
+                headers = ['Year', 'Split']
+                for stat in stats:
+                    stat_lower = stat.lower()
+                    if stat_lower in ['avg', 'ba']: headers.append('AVG')
+                    elif stat_lower == 'ops': headers.append('OPS')
+                    elif stat_lower == 'hr': headers.append('HR')
+                    elif stat_lower == 'so': headers.append('SO')
+                    elif stat_lower == 'whip': headers.append('WHIP')
+                    elif stat_lower == 'ip': headers.append('IP')
+            else:
+                headers = ['Year', 'Split', 'PA', 'AB', 'H', '2B', '3B', 'HR', 'BB', 'SO', 'AVG', 'OBP', 'SLG', 'OPS', 'IP']
+        else:
+            if stats:
+                headers = ['Year', 'Split']
+                for stat in stats:
+                    stat_lower = stat.lower()
+                    if stat_lower in ['avg', 'ba']: headers.append('AVG')
+                    elif stat_lower == 'ops': headers.append('OPS')
+                    elif stat_lower == 'hr': headers.append('HR')
+                    elif stat_lower == 'rbi': headers.append('RBI')
+            else:
+                headers = ['Year', 'Split', 'PA', 'AB', 'H', '2B', '3B', 'HR', 'RBI', 'BB', 'SO', 'AVG', 'OBP', 'SLG', 'OPS']
+
+        # Print header
+        click.echo("\n" + "  ".join(f"{h:<6}" for h in headers))
+        header_len = len("  ".join(f"{h:<6}" for h in headers))
+        click.echo("-" * header_len)
+
+        # Print data for each year
+        for year_data in splits:
+            yr = year_data['year']
+            left_stat = year_data['left']
+            right_stat = year_data['right']
+
+            # vs Left row
+            left_label = 'LHB' if player_type == 'pitcher' else 'LHP'
+            row_parts = [f"{yr:<6}", f"{left_label:<6}"]
+
+            if player_type == 'pitcher':
+                if stats:
+                    for stat in stats:
+                        stat_lower = stat.lower()
+                        if stat_lower in ['avg', 'ba']: row_parts.append(f"{left_stat['ba']:<6.3f}")
+                        elif stat_lower == 'ops': row_parts.append(f"{left_stat['ops']:<6.3f}")
+                        elif stat_lower == 'hr': row_parts.append(f"{left_stat['hr']:<6}")
+                        elif stat_lower == 'so': row_parts.append(f"{left_stat['so']:<6}")
+                        elif stat_lower == 'whip': row_parts.append(f"{left_stat['whip']:<6.3f}")
+                        elif stat_lower == 'ip': row_parts.append(f"{left_stat['ip']:<6}")
+                else:
+                    row_parts.extend([
+                        f"{left_stat['pa']:<6}",
+                        f"{left_stat['ab']:<6}",
+                        f"{left_stat['h']:<6}",
+                        f"{left_stat['doubles']:<6}",
+                        f"{left_stat['triples']:<6}",
+                        f"{left_stat['hr']:<6}",
+                        f"{left_stat['bb']:<6}",
+                        f"{left_stat['so']:<6}",
+                        f"{left_stat['ba']:<6.3f}",
+                        f"{left_stat['obp']:<6.3f}",
+                        f"{left_stat['slg']:<6.3f}",
+                        f"{left_stat['ops']:<6.3f}",
+                        f"{left_stat['ip']:<6}"
+                    ])
+            else:
+                if stats:
+                    for stat in stats:
+                        stat_lower = stat.lower()
+                        if stat_lower in ['avg', 'ba']: row_parts.append(f"{left_stat['ba']:<6.3f}")
+                        elif stat_lower == 'ops': row_parts.append(f"{left_stat['ops']:<6.3f}")
+                        elif stat_lower == 'hr': row_parts.append(f"{left_stat['hr']:<6}")
+                        elif stat_lower == 'rbi': row_parts.append(f"{left_stat['rbi']:<6}")
+                else:
+                    row_parts.extend([
+                        f"{left_stat['pa']:<6}",
+                        f"{left_stat['ab']:<6}",
+                        f"{left_stat['h']:<6}",
+                        f"{left_stat['doubles']:<6}",
+                        f"{left_stat['triples']:<6}",
+                        f"{left_stat['hr']:<6}",
+                        f"{left_stat['rbi']:<6}",
+                        f"{left_stat['bb']:<6}",
+                        f"{left_stat['so']:<6}",
+                        f"{left_stat['ba']:<6.3f}",
+                        f"{left_stat['obp']:<6.3f}",
+                        f"{left_stat['slg']:<6.3f}",
+                        f"{left_stat['ops']:<6.3f}"
+                    ])
+
+            click.echo("  ".join(row_parts))
+
+            # vs Right row
+            right_label = 'RHB' if player_type == 'pitcher' else 'RHP'
+            row_parts = [f"{'':<6}", f"{right_label:<6}"]
+
+            if player_type == 'pitcher':
+                if stats:
+                    for stat in stats:
+                        stat_lower = stat.lower()
+                        if stat_lower in ['avg', 'ba']: row_parts.append(f"{right_stat['ba']:<6.3f}")
+                        elif stat_lower == 'ops': row_parts.append(f"{right_stat['ops']:<6.3f}")
+                        elif stat_lower == 'hr': row_parts.append(f"{right_stat['hr']:<6}")
+                        elif stat_lower == 'so': row_parts.append(f"{right_stat['so']:<6}")
+                        elif stat_lower == 'whip': row_parts.append(f"{right_stat['whip']:<6.3f}")
+                        elif stat_lower == 'ip': row_parts.append(f"{right_stat['ip']:<6}")
+                else:
+                    row_parts.extend([
+                        f"{right_stat['pa']:<6}",
+                        f"{right_stat['ab']:<6}",
+                        f"{right_stat['h']:<6}",
+                        f"{right_stat['doubles']:<6}",
+                        f"{right_stat['triples']:<6}",
+                        f"{right_stat['hr']:<6}",
+                        f"{right_stat['bb']:<6}",
+                        f"{right_stat['so']:<6}",
+                        f"{right_stat['ba']:<6.3f}",
+                        f"{right_stat['obp']:<6.3f}",
+                        f"{right_stat['slg']:<6.3f}",
+                        f"{right_stat['ops']:<6.3f}",
+                        f"{right_stat['ip']:<6}"
+                    ])
+            else:
+                if stats:
+                    for stat in stats:
+                        stat_lower = stat.lower()
+                        if stat_lower in ['avg', 'ba']: row_parts.append(f"{right_stat['ba']:<6.3f}")
+                        elif stat_lower == 'ops': row_parts.append(f"{right_stat['ops']:<6.3f}")
+                        elif stat_lower == 'hr': row_parts.append(f"{right_stat['hr']:<6}")
+                        elif stat_lower == 'rbi': row_parts.append(f"{right_stat['rbi']:<6}")
+                else:
+                    row_parts.extend([
+                        f"{right_stat['pa']:<6}",
+                        f"{right_stat['ab']:<6}",
+                        f"{right_stat['h']:<6}",
+                        f"{right_stat['doubles']:<6}",
+                        f"{right_stat['triples']:<6}",
+                        f"{right_stat['hr']:<6}",
+                        f"{right_stat['rbi']:<6}",
+                        f"{right_stat['bb']:<6}",
+                        f"{right_stat['so']:<6}",
+                        f"{right_stat['ba']:<6.3f}",
+                        f"{right_stat['obp']:<6.3f}",
+                        f"{right_stat['slg']:<6.3f}",
+                        f"{right_stat['ops']:<6.3f}"
+                    ])
+
+            click.echo("  ".join(row_parts))
+
+        click.echo()
+        return
+
+    # Single year or career display
+    left_stat = splits['left']
+    right_stat = splits['right']
+
+    # Determine which stats to display
+    if player_type == 'pitcher':
+        if stats:
+            # Custom stats
+            all_stats = [('Split', None)]
+            for stat in stats:
+                stat_lower = stat.lower()
+                if stat_lower in ['pa', 'bf']:
+                    all_stats.append(('PA', 'pa'))
+                elif stat_lower == 'ab':
+                    all_stats.append(('AB', 'ab'))
+                elif stat_lower == 'h':
+                    all_stats.append(('H', 'h'))
+                elif stat_lower in ['2b', 'doubles']:
+                    all_stats.append(('2B', 'doubles'))
+                elif stat_lower in ['3b', 'triples']:
+                    all_stats.append(('3B', 'triples'))
+                elif stat_lower == 'hr':
+                    all_stats.append(('HR', 'hr'))
+                elif stat_lower == 'bb':
+                    all_stats.append(('BB', 'bb'))
+                elif stat_lower == 'so':
+                    all_stats.append(('SO', 'so'))
+                elif stat_lower in ['ba', 'avg']:
+                    all_stats.append(('AVG', 'ba'))
+                elif stat_lower == 'obp':
+                    all_stats.append(('OBP', 'obp'))
+                elif stat_lower == 'slg':
+                    all_stats.append(('SLG', 'slg'))
+                elif stat_lower == 'ops':
+                    all_stats.append(('OPS', 'ops'))
+                elif stat_lower == 'ip':
+                    all_stats.append(('IP', 'ip'))
+                elif stat_lower == 'whip':
+                    all_stats.append(('WHIP', 'whip'))
+                elif stat_lower == 'era':
+                    all_stats.append(('ERA', 'era'))
+                elif stat_lower in ['k/9', 'so/9', 'k9', 'so9']:
+                    all_stats.append(('K/9', 'k9'))
+                elif stat_lower in ['bb/9', 'bb9']:
+                    all_stats.append(('BB/9', 'bb9'))
+        else:
+            # Default stats for pitchers
+            all_stats = [
+                ('Split', None), ('PA', 'pa'), ('AB', 'ab'), ('H', 'h'),
+                ('2B', 'doubles'), ('3B', 'triples'), ('HR', 'hr'), ('BB', 'bb'),
+                ('SO', 'so'), ('AVG', 'ba'), ('OBP', 'obp'), ('SLG', 'slg'),
+                ('OPS', 'ops'), ('IP', 'ip')
+            ]
+    else:  # hitter
+        if stats:
+            # Custom stats
+            all_stats = [('Split', None)]
+            for stat in stats:
+                stat_lower = stat.lower()
+                if stat_lower == 'pa':
+                    all_stats.append(('PA', 'pa'))
+                elif stat_lower == 'ab':
+                    all_stats.append(('AB', 'ab'))
+                elif stat_lower == 'h':
+                    all_stats.append(('H', 'h'))
+                elif stat_lower in ['2b', 'doubles']:
+                    all_stats.append(('2B', 'doubles'))
+                elif stat_lower in ['3b', 'triples']:
+                    all_stats.append(('3B', 'triples'))
+                elif stat_lower == 'hr':
+                    all_stats.append(('HR', 'hr'))
+                elif stat_lower == 'rbi':
+                    all_stats.append(('RBI', 'rbi'))
+                elif stat_lower == 'bb':
+                    all_stats.append(('BB', 'bb'))
+                elif stat_lower == 'so':
+                    all_stats.append(('SO', 'so'))
+                elif stat_lower in ['ba', 'avg']:
+                    all_stats.append(('AVG', 'ba'))
+                elif stat_lower == 'obp':
+                    all_stats.append(('OBP', 'obp'))
+                elif stat_lower == 'slg':
+                    all_stats.append(('SLG', 'slg'))
+                elif stat_lower == 'ops':
+                    all_stats.append(('OPS', 'ops'))
+        else:
+            # Default stats for hitters
+            all_stats = [
+                ('Split', None), ('PA', 'pa'), ('AB', 'ab'), ('H', 'h'),
+                ('2B', 'doubles'), ('3B', 'triples'), ('HR', 'hr'), ('RBI', 'rbi'),
+                ('BB', 'bb'), ('SO', 'so'), ('AVG', 'ba'), ('OBP', 'obp'),
+                ('SLG', 'slg'), ('OPS', 'ops')
+            ]
+
+    # Display
+    year_str = f" ({year_filter})" if year_filter else " (Career)"
+    click.echo(f"\n{api_name} - Platoon Splits{year_str}")
+    click.echo("=" * 80)
+
+    # Build header
+    header_parts = []
+    for label, key in all_stats:
+        if key is None:
+            header_parts.append(f"{label:<15}")
+        elif key in ['ba', 'obp', 'slg', 'ops', 'whip', 'era', 'k9', 'bb9']:
+            header_parts.append(f"{label:<7}")
+        elif key == 'ip':
+            header_parts.append(f"{label:<7}")
+        elif key == 'rbi':
+            header_parts.append(f"{label:<5}")
+        else:
+            header_parts.append(f"{label:<6}")
+
+    click.echo("\n" + " ".join(header_parts))
+    click.echo("-" * 100)
+
+    # Build rows for vs Left and vs Right
+    for split_name, split_data in [('vs LHB' if player_type == 'pitcher' else 'vs LHP', left_stat),
+                                     ('vs RHB' if player_type == 'pitcher' else 'vs RHP', right_stat)]:
+        row_parts = []
+        for label, key in all_stats:
+            if key is None:
+                row_parts.append(f"{split_name:<15}")
+            elif key in ['ba', 'obp', 'slg', 'ops', 'whip', 'era', 'k9', 'bb9']:
+                val = split_data.get(key, 0.0)
+                row_parts.append(f"{val:<7.3f}")
+            elif key == 'ip':
+                val = split_data.get(key, '0')
+                row_parts.append(f"{val:<7}")
+            elif key == 'rbi':
+                val = split_data.get(key, 0)
+                row_parts.append(f"{val:<5}")
+            else:
+                val = split_data.get(key, 0)
+                row_parts.append(f"{val:<6}")
+        click.echo(" ".join(row_parts))
+
+    click.echo()
+
 def handle_versus_matchup(cursor, player1_name, player2_name, year_filter):
     """Handle batter vs pitcher matchup display"""
     # Look up both players in our database to understand their types
@@ -1497,14 +1879,22 @@ def render_matchup_stats(batter_name, pitcher_name, stats_list, year_filter):
 @click.option('-ct', '--compare-team', is_flag=True, help='Compare player to team average')
 @click.option('-cl', '--compare-league', is_flag=True, help='Compare player to league average')
 @click.option('-v', '--versus', help='Show batter vs pitcher matchup stats')
-def main(player_name, stats, year, compare, compare_team, compare_league, versus):
+@click.option('-p', '--platoon', is_flag=True, help='Show platoon splits (vs LHB/RHB or vs LHP/RHP)')
+def main(player_name, stats, year, compare, compare_team, compare_league, versus, platoon):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         # Validate that conflicting flags aren't used together
-        if sum([bool(compare), compare_team, compare_league, bool(versus)]) > 1:
-            click.echo("Error: Cannot use -c, -ct, -cl, and -v together. Choose one comparison mode.")
+        if sum([bool(compare), compare_team, compare_league, bool(versus), platoon]) > 1:
+            click.echo("Error: Cannot use -c, -ct, -cl, -v, and -p together. Choose one mode.")
+            return
+
+        # If platoon flag is set, show platoon splits
+        if platoon:
+            display_platoon_splits(cursor, player_name, year, stats)
+            cursor.close()
+            conn.close()
             return
 
         # If versus flag is set, show batter vs pitcher matchup
