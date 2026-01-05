@@ -1,6 +1,6 @@
 # Baseball CLI (bcli)
 
-A command-line tool for querying MLB player statistics with advanced comparison features. Perfect for quick lookups while watching games!
+A command-line tool for querying MLB player statistics
 
 ## Setup
 
