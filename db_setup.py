@@ -4,7 +4,6 @@ import os
 DB_PATH = os.path.join(os.path.dirname(__file__), 'baseball_stats.db')
 
 def create_tables():
-    """Create the pitcher_stats table"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -54,16 +53,66 @@ def create_tables():
     ''')
 
     cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_player_lower ON pitcher_stats (player COLLATE NOCASE)
+        CREATE INDEX IF NOT EXISTS idx_pitcher_player_lower ON pitcher_stats (player COLLATE NOCASE)
     ''')
 
     cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_year ON pitcher_stats (year)
+        CREATE INDEX IF NOT EXISTS idx_pitcher_year ON pitcher_stats (year)
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hitter_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER,
+            rk INTEGER,
+            player TEXT,
+            age INTEGER,
+            team TEXT,
+            lg TEXT,
+            war REAL,
+            g INTEGER,
+            pa INTEGER,
+            ab INTEGER,
+            r INTEGER,
+            h INTEGER,
+            doubles INTEGER,
+            triples INTEGER,
+            hr INTEGER,
+            rbi INTEGER,
+            sb INTEGER,
+            cs INTEGER,
+            bb INTEGER,
+            so INTEGER,
+            ba REAL,
+            obp REAL,
+            slg REAL,
+            ops REAL,
+            ops_plus INTEGER,
+            roba REAL,
+            rbat_plus INTEGER,
+            tb INTEGER,
+            gidp INTEGER,
+            hbp INTEGER,
+            sh INTEGER,
+            sf INTEGER,
+            ibb INTEGER,
+            pos TEXT,
+            awards TEXT,
+            player_additional TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_hitter_player_lower ON hitter_stats (player COLLATE NOCASE)
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_hitter_year ON hitter_stats (year)
     ''')
 
     conn.commit()
     print(f"Database created at: {DB_PATH}")
-    print("Table 'pitcher_stats' created successfully")
+    print("Tables 'pitcher_stats' and 'hitter_stats' created successfully")
 
     cursor.close()
     conn.close()
