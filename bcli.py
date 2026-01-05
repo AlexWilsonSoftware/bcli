@@ -133,6 +133,62 @@ def format_stat_value(value):
         return str(value)
     return value
 
+def parse_positions(pos_str):
+    """Convert position codes to readable format
+
+    Examples:
+        *6/D -> *SS / DH
+        *D1/H97 -> *DH, P / PH, RF, LF
+        *98/HD4 -> *RF, CF / PH, DH, 2B
+    """
+    if not pos_str:
+        return ''
+
+    # Position mapping
+    pos_map = {
+        '1': 'P',
+        '2': 'C',
+        '3': '1B',
+        '4': '2B',
+        '5': '3B',
+        '6': 'SS',
+        '7': 'LF',
+        '8': 'CF',
+        '9': 'RF',
+        'D': 'DH',
+        'H': 'PH'
+    }
+
+    # Check if starts with *
+    has_star = pos_str.startswith('*')
+    if has_star:
+        pos_str = pos_str[1:]
+
+    # Split by /
+    parts = pos_str.split('/')
+    result_parts = []
+
+    for part in parts:
+        # Parse each character as a position in this part
+        positions_in_part = []
+        seen_in_part = set()
+
+        for char in part:
+            if char in pos_map:
+                pos_name = pos_map[char]
+                if pos_name not in seen_in_part:
+                    seen_in_part.add(pos_name)
+                    positions_in_part.append(pos_name)
+
+        if positions_in_part:
+            result_parts.append(', '.join(positions_in_part))
+
+    result = ' / '.join(result_parts)
+    if has_star:
+        result = '*' + result
+
+    return result
+
 def parse_awards(awards_str):
     if not awards_str:
         return None
@@ -494,6 +550,13 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
                 awards_val = player_dict.get('awards', '')
                 if awards_val:
                     parsed = parse_awards(awards_val)
+                    row_values.append(parsed if parsed else '')
+                else:
+                    row_values.append('')
+            elif key == 'pos':
+                pos_val = player_dict.get('pos', '')
+                if pos_val:
+                    parsed = parse_positions(pos_val)
                     row_values.append(parsed if parsed else '')
                 else:
                     row_values.append('')
