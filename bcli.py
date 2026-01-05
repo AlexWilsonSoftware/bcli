@@ -642,7 +642,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
         leaders_by_year = {}
 
         if player_type == 'pitcher':
-            lower_is_better = {'era', 'fip', 'whip', 'h9', 'bb9'}
+            lower_is_better = {'era', 'fip', 'whip', 'h9', 'hr9', 'bb9'}
             rate_stats_needing_qualification = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9', 'so9', 'w_l_pct', 'era_plus', 'so_bb'}
             qual_field = 'ip'
             qual_threshold = 162
@@ -778,7 +778,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
                         player_float = float(player_val)
 
                         # Lower is better for these stats
-                        lower_is_better_stats = {'era', 'fip', 'whip', 'h9', 'bb9'}
+                        lower_is_better_stats = {'era', 'fip', 'whip', 'h9', 'hr9', 'bb9'}
 
                         if stat_key in lower_is_better_stats:
                             if player_float < avg_float:
@@ -813,7 +813,7 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
             return '', ''
 
         if player_type == 'pitcher':
-            lower_is_better_check = {'era', 'fip', 'whip', 'h9', 'bb9'}
+            lower_is_better_check = {'era', 'fip', 'whip', 'h9', 'hr9', 'bb9'}
         else:
             lower_is_better_check = {}
 
@@ -1028,7 +1028,7 @@ def compare_to_average_display(player_dict, avg_dict, player_name, comparison_na
     cumulative_stats = {'r', 'h', 'doubles', 'triples', 'hr', 'rbi', 'sb', 'cs', 'bb', 'so', 'tb', 'hbp', 'sh', 'sf', 'ibb',
                         'w', 'l', 'gs', 'gf', 'cg', 'sho', 'sv', 'er', 'hbp', 'bk', 'wp'}
 
-    lower_is_better = {'era', 'fip', 'whip', 'h9', 'bb9'}
+    lower_is_better = {'era', 'fip', 'whip', 'h9', 'hr9', 'bb9'}
 
     # Get normalization factor
     if player_type == 'hitter':
@@ -1106,11 +1106,40 @@ def compare_to_team(cursor, player_name, stats, year):
         return
 
     if pitcher_matches and hitter_matches:
-        click.echo("Error: Two-way players not supported for team comparison")
-        return
+        # Check if this is Shohei Ohtani
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        column_names = [desc[0] for desc in cursor.description]
+        player_col_idx = column_names.index('player')
+        first_pitcher = pitcher_matches[0]
+        player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-    player_type = 'pitcher' if pitcher_matches else 'hitter'
-    matches = pitcher_matches if pitcher_matches else hitter_matches
+        is_ohtani = 'shohei ohtani' in player_name_normalized
+
+        if is_ohtani:
+            click.echo("Error: Ohtani is a two-way player. Team comparison not supported for two-way players.")
+            return
+
+        # Not Ohtani - determine primary position by total games
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        pitcher_column_names = [desc[0] for desc in cursor.description]
+        pitcher_g_idx = pitcher_column_names.index('g')
+        pitcher_total_games = sum(match[pitcher_g_idx] for match in pitcher_matches if match[pitcher_g_idx] is not None)
+
+        cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+        hitter_column_names = [desc[0] for desc in cursor.description]
+        hitter_g_idx = hitter_column_names.index('g')
+        hitter_total_games = sum(match[hitter_g_idx] for match in hitter_matches if match[hitter_g_idx] is not None)
+
+        # Use whichever has more games
+        if pitcher_total_games >= hitter_total_games:
+            player_type = 'pitcher'
+            matches = pitcher_matches
+        else:
+            player_type = 'hitter'
+            matches = hitter_matches
+    else:
+        player_type = 'pitcher' if pitcher_matches else 'hitter'
+        matches = pitcher_matches if pitcher_matches else hitter_matches
 
     # Use render_player with comparison_mode='team'
     render_player(cursor, matches, player_type, stats, year, comparison_mode='team')
@@ -1124,11 +1153,40 @@ def compare_to_league(cursor, player_name, stats, year):
         return
 
     if pitcher_matches and hitter_matches:
-        click.echo("Error: Two-way players not supported for league comparison")
-        return
+        # Check if this is Shohei Ohtani
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        column_names = [desc[0] for desc in cursor.description]
+        player_col_idx = column_names.index('player')
+        first_pitcher = pitcher_matches[0]
+        player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-    player_type = 'pitcher' if pitcher_matches else 'hitter'
-    matches = pitcher_matches if pitcher_matches else hitter_matches
+        is_ohtani = 'shohei ohtani' in player_name_normalized
+
+        if is_ohtani:
+            click.echo("Error: Ohtani is a two-way player. League comparison not supported for two-way players.")
+            return
+
+        # Not Ohtani - determine primary position by total games
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        pitcher_column_names = [desc[0] for desc in cursor.description]
+        pitcher_g_idx = pitcher_column_names.index('g')
+        pitcher_total_games = sum(match[pitcher_g_idx] for match in pitcher_matches if match[pitcher_g_idx] is not None)
+
+        cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+        hitter_column_names = [desc[0] for desc in cursor.description]
+        hitter_g_idx = hitter_column_names.index('g')
+        hitter_total_games = sum(match[hitter_g_idx] for match in hitter_matches if match[hitter_g_idx] is not None)
+
+        # Use whichever has more games
+        if pitcher_total_games >= hitter_total_games:
+            player_type = 'pitcher'
+            matches = pitcher_matches
+        else:
+            player_type = 'hitter'
+            matches = hitter_matches
+    else:
+        player_type = 'pitcher' if pitcher_matches else 'hitter'
+        matches = pitcher_matches if pitcher_matches else hitter_matches
 
     # Use render_player with comparison_mode='league'
     render_player(cursor, matches, player_type, stats, year, comparison_mode='league')
@@ -1344,7 +1402,7 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
                 ('OPS', 'ops'), ('OPS+', 'ops_plus')
             ]
 
-    lower_is_better = {'era', 'fip', 'whip', 'h9', 'bb9'}
+    lower_is_better = {'era', 'fip', 'whip', 'h9', 'hr9', 'bb9'}
 
     # Print header
     click.echo(f"\n{player1_full_name} vs {player2_full_name} ({year_filter})")
@@ -1418,11 +1476,40 @@ def display_platoon_splits(cursor, player_name, year, stats):
 
     # Determine player type
     if pitcher_matches and hitter_matches:
-        click.echo(f"Error: {player_name} is a two-way player. Platoon splits not yet supported for two-way players.")
-        return
+        # Check if this is Shohei Ohtani
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        column_names = [desc[0] for desc in cursor.description]
+        player_col_idx = column_names.index('player')
+        first_pitcher = pitcher_matches[0]
+        player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-    player_type = 'pitcher' if pitcher_matches else 'hitter'
-    matches = pitcher_matches if pitcher_matches else hitter_matches
+        is_ohtani = 'shohei ohtani' in player_name_normalized
+
+        if is_ohtani:
+            click.echo(f"Error: Ohtani is a two-way player. Platoon splits not yet supported for two-way players.")
+            return
+
+        # Not Ohtani - determine primary position by total games
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        pitcher_column_names = [desc[0] for desc in cursor.description]
+        pitcher_g_idx = pitcher_column_names.index('g')
+        pitcher_total_games = sum(match[pitcher_g_idx] for match in pitcher_matches if match[pitcher_g_idx] is not None)
+
+        cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+        hitter_column_names = [desc[0] for desc in cursor.description]
+        hitter_g_idx = hitter_column_names.index('g')
+        hitter_total_games = sum(match[hitter_g_idx] for match in hitter_matches if match[hitter_g_idx] is not None)
+
+        # Use whichever has more games
+        if pitcher_total_games >= hitter_total_games:
+            player_type = 'pitcher'
+            matches = pitcher_matches
+        else:
+            player_type = 'hitter'
+            matches = hitter_matches
+    else:
+        player_type = 'pitcher' if pitcher_matches else 'hitter'
+        matches = pitcher_matches if pitcher_matches else hitter_matches
 
     # Check for multiple players
     cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
@@ -2283,56 +2370,83 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
             return
 
         if pitcher_matches and hitter_matches:
-            # For two-way players, determine which stats to show based on requested stats
-            if stats:
-                show_pitcher = False
-                show_hitter = False
+            # Check if this is Shohei Ohtani (only true two-way player)
+            cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+            column_names = [desc[0] for desc in cursor.description]
+            player_col_idx = column_names.index('player')
+            first_pitcher = pitcher_matches[0]
+            player_name_normalized = re.sub(r'[*#+]', '', first_pitcher[player_col_idx]).strip().lower()
 
-                for stat in stats:
-                    stat_lower = stat.lower()
-                    # Normalize stat names
-                    if stat_lower == 'w-l%':
-                        stat_key = 'w_l_pct'
-                    elif stat_lower == 'so/bb':
-                        stat_key = 'so_bb'
-                    elif stat_lower == 'era+':
-                        stat_key = 'era_plus'
-                    elif stat_lower == 'ops+':
-                        stat_key = 'ops_plus'
-                    elif stat_lower == 'rbat+':
-                        stat_key = 'rbat_plus'
-                    elif stat_lower == '2b':
-                        stat_key = 'doubles'
-                    elif stat_lower == '3b':
-                        stat_key = 'triples'
-                    elif stat_lower == 'h/9':
-                        stat_key = 'h9'
-                    elif stat_lower == 'hr/9':
-                        stat_key = 'hr9'
-                    elif stat_lower == 'bb/9':
-                        stat_key = 'bb9'
-                    elif stat_lower == 'so/9':
-                        stat_key = 'so9'
-                    else:
-                        stat_key = stat_lower.replace('-', '_').replace('/', '_')
+            is_ohtani = 'shohei ohtani' in player_name_normalized
 
-                    category = get_stat_category(stat_key)
-                    if category == 'pitcher':
-                        show_pitcher = True
-                    elif category == 'hitter':
-                        show_hitter = True
-                    else:  # common stat
-                        show_pitcher = True
-                        show_hitter = True
+            if is_ohtani:
+                # For Ohtani, show both pitching and hitting stats
+                if stats:
+                    show_pitcher = False
+                    show_hitter = False
 
-                if show_pitcher:
+                    for stat in stats:
+                        stat_lower = stat.lower()
+                        # Normalize stat names
+                        if stat_lower == 'w-l%':
+                            stat_key = 'w_l_pct'
+                        elif stat_lower == 'so/bb':
+                            stat_key = 'so_bb'
+                        elif stat_lower == 'era+':
+                            stat_key = 'era_plus'
+                        elif stat_lower == 'ops+':
+                            stat_key = 'ops_plus'
+                        elif stat_lower == 'rbat+':
+                            stat_key = 'rbat_plus'
+                        elif stat_lower == '2b':
+                            stat_key = 'doubles'
+                        elif stat_lower == '3b':
+                            stat_key = 'triples'
+                        elif stat_lower == 'h/9':
+                            stat_key = 'h9'
+                        elif stat_lower == 'hr/9':
+                            stat_key = 'hr9'
+                        elif stat_lower == 'bb/9':
+                            stat_key = 'bb9'
+                        elif stat_lower == 'so/9':
+                            stat_key = 'so9'
+                        else:
+                            stat_key = stat_lower.replace('-', '_').replace('/', '_')
+
+                        category = get_stat_category(stat_key)
+                        if category == 'pitcher':
+                            show_pitcher = True
+                        elif category == 'hitter':
+                            show_hitter = True
+                        else:  # common stat
+                            show_pitcher = True
+                            show_hitter = True
+
+                    if show_pitcher:
+                        render_player(cursor, pitcher_matches, 'pitcher', stats, year)
+                    if show_hitter:
+                        render_player(cursor, hitter_matches, 'hitter', stats, year)
+                else:
+                    # No specific stats requested, show both
                     render_player(cursor, pitcher_matches, 'pitcher', stats, year)
-                if show_hitter:
                     render_player(cursor, hitter_matches, 'hitter', stats, year)
             else:
-                # No specific stats requested, show both
-                render_player(cursor, pitcher_matches, 'pitcher', stats, year)
-                render_player(cursor, hitter_matches, 'hitter', stats, year)
+                # Not Ohtani - determine primary position by total games
+                cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+                pitcher_column_names = [desc[0] for desc in cursor.description]
+                pitcher_g_idx = pitcher_column_names.index('g')
+                pitcher_total_games = sum(match[pitcher_g_idx] for match in pitcher_matches if match[pitcher_g_idx] is not None)
+
+                cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+                hitter_column_names = [desc[0] for desc in cursor.description]
+                hitter_g_idx = hitter_column_names.index('g')
+                hitter_total_games = sum(match[hitter_g_idx] for match in hitter_matches if match[hitter_g_idx] is not None)
+
+                # Show whichever has more games
+                if pitcher_total_games >= hitter_total_games:
+                    render_player(cursor, pitcher_matches, 'pitcher', stats, year)
+                else:
+                    render_player(cursor, hitter_matches, 'hitter', stats, year)
         elif pitcher_matches:
             render_player(cursor, pitcher_matches, 'pitcher', stats, year)
         else:
