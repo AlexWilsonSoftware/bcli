@@ -60,13 +60,11 @@ def find_player (cursor ,name_query ):
     first_pattern ,last_pattern =parse_name_query (name_query )
 
     if first_pattern is None :
-        search_pattern =remove_accents (last_pattern .lower ())
-        first_search =None 
-        last_search =search_pattern 
+        first_search =None
+        last_search =remove_accents (last_pattern .lower ())
     else :
         first_search =remove_accents (first_pattern .lower ())
         last_search =remove_accents (last_pattern .lower ())
-        search_pattern =f'{first_search}{last_search}'
     if first_pattern is None :
         pattern =f'%{last_pattern.lower()}%'
     else :
@@ -1094,10 +1092,6 @@ def compare_players (cursor ,player1_name ,player2_name ,stats ,year ):
         return 
 
 
-    player1_is_twoway =bool (pitcher1_matches and hitter1_matches )
-    player2_is_twoway =bool (pitcher2_matches and hitter2_matches )
-
-
     if not year :
         year_filter =2025 
     else :
@@ -1836,7 +1830,6 @@ def render_matchup_stats (batter_name ,pitcher_name ,stats_list ,year_filter ):
     if year_filter and year_filter .lower ()=='all':
 
         display_stats =[s for s in stats_list if s ['year']!='career']
-        career_total =[s for s in stats_list if s ['year']=='career']
     elif year_filter :
 
         if len (year_filter )==2 and year_filter .isdigit ():
@@ -1845,7 +1838,6 @@ def render_matchup_stats (batter_name ,pitcher_name ,stats_list ,year_filter ):
             year_str =year_filter 
 
         display_stats =[s for s in stats_list if s ['year']==year_str ]
-        career_total =[]
 
         if not display_stats :
             click .echo (f"No matchup data found for {year_str}")
@@ -1853,7 +1845,6 @@ def render_matchup_stats (batter_name ,pitcher_name ,stats_list ,year_filter ):
     else :
 
         display_stats =[s for s in stats_list if s ['year']=='career']
-        career_total =[]
 
     if not display_stats :
         click .echo (f"No matchup data found")
@@ -2037,10 +2028,7 @@ def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versu
                 return 
 
 
-        has_multiple =False 
-
-
-        pitcher_count =0 
+        pitcher_count =0
         unique_pitchers =set ()
         unique_pitcher_ids =set ()
         if pitcher_matches :
@@ -2051,11 +2039,9 @@ def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versu
             unique_pitchers =set (re .sub (r'[*#+]','',match [player_col_idx ]).strip ()for match in pitcher_matches )
             unique_pitcher_ids =set (match [player_id_idx ]for match in pitcher_matches if match [player_id_idx ])
             pitcher_count =len (unique_pitchers )
-            if pitcher_count >1 :
-                has_multiple =True 
 
 
-        hitter_count =0 
+        hitter_count =0
         unique_hitters =set ()
         unique_hitter_ids =set ()
         if hitter_matches :
@@ -2065,9 +2051,7 @@ def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versu
             player_id_idx =column_names .index ('player_additional')
             unique_hitters =set (re .sub (r'[*#+]','',match [player_col_idx ]).strip ()for match in hitter_matches )
             unique_hitter_ids =set (match [player_id_idx ]for match in hitter_matches if match [player_id_idx ])
-            hitter_count =len (unique_hitters )
-            if hitter_count >1 :
-                has_multiple =True 
+            hitter_count =len (unique_hitters ) 
 
 
         same_person =bool (unique_pitcher_ids &unique_hitter_ids )
@@ -2092,8 +2076,6 @@ def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versu
                 cursor .execute (f"SELECT * FROM pitcher_stats LIMIT 1")
                 column_names =[desc [0 ]for desc in cursor .description ]
                 player_col_idx =column_names .index ('player')
-                team_col_idx =column_names .index ('team')
-                year_col_idx =column_names .index ('year')
 
                 for player in sorted (unique_pitchers ):
                     player_matches_filtered =[match for match in pitcher_matches if re .sub (r'[*#+]','',match [player_col_idx ]).strip ()==player ]
@@ -2104,8 +2086,6 @@ def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versu
                 cursor .execute (f"SELECT * FROM hitter_stats LIMIT 1")
                 column_names =[desc [0 ]for desc in cursor .description ]
                 player_col_idx =column_names .index ('player')
-                team_col_idx =column_names .index ('team')
-                year_col_idx =column_names .index ('year')
 
                 for player in sorted (unique_hitters ):
                     player_matches_filtered =[match for match in hitter_matches if re .sub (r'[*#+]','',match [player_col_idx ]).strip ()==player ]
@@ -2123,7 +2103,7 @@ def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versu
                 if choice ==0 or choice <0 or choice >len (choices ):
                     return 
 
-                selected_name ,selected_type ,_ ,selected_matches =choices [choice -1 ]
+                _ ,selected_type ,_ ,selected_matches =choices [choice -1 ]
 
 
                 if selected_type =='pitcher':
