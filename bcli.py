@@ -374,8 +374,8 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
     # Now we know there's only one player, print the header
     first_player = dict(zip(column_names, matches[0]))
     player_name = first_player['player']
-    click.echo(f"\n{player_name} ({player_type.upper()})")
-    click.echo("=" * 50)
+    header_text = f"{player_name} ({player_type.upper()})"
+    click.echo(f"\n{header_text}")
 
     if stats:
         # Build custom stats list starting with base columns
@@ -731,7 +731,13 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
     header_parts = []
     for idx, (label, key) in enumerate(all_stats):
         header_parts.append(label.ljust(col_widths[idx]))
-    click.echo("  ".join(header_parts))
+    header_line = "  ".join(header_parts)
+
+    # Print separator line matching header width
+    separator_width = max(len(header_text), len(header_line))
+    click.echo("=" * separator_width)
+
+    click.echo(header_line)
 
     def get_stat_formatting(year, player_league, player_data, stat_key):
         # If comparison mode, check if above average
@@ -904,7 +910,9 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
     # Print comparison averages if in comparison mode
     if comparison_mode and comparison_averages:
         click.echo()
-        click.echo("-" * sum(col_widths) + "-" * (len(col_widths) * 2))
+        # Calculate separator width: sum of column widths + spaces between columns (2 spaces * (n-1))
+        separator_line_width = sum(col_widths) + (len(col_widths) - 1) * 2
+        click.echo("-" * separator_line_width)
 
         comparison_label = "League Avg" if comparison_mode == 'league' else "Team Avg"
 
@@ -2138,11 +2146,14 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
         # Check pitchers
         pitcher_count = 0
         unique_pitchers = set()
+        unique_pitcher_ids = set()
         if pitcher_matches:
             cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
             column_names = [desc[0] for desc in cursor.description]
             player_col_idx = column_names.index('player')
+            player_id_idx = column_names.index('player_additional')
             unique_pitchers = set(re.sub(r'[*#+]', '', match[player_col_idx]).strip() for match in pitcher_matches)
+            unique_pitcher_ids = set(match[player_id_idx] for match in pitcher_matches if match[player_id_idx])
             pitcher_count = len(unique_pitchers)
             if pitcher_count > 1:
                 has_multiple = True
@@ -2150,21 +2161,112 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
         # Check hitters
         hitter_count = 0
         unique_hitters = set()
+        unique_hitter_ids = set()
         if hitter_matches:
             cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
             column_names = [desc[0] for desc in cursor.description]
             player_col_idx = column_names.index('player')
+            player_id_idx = column_names.index('player_additional')
             unique_hitters = set(re.sub(r'[*#+]', '', match[player_col_idx]).strip() for match in hitter_matches)
+            unique_hitter_ids = set(match[player_id_idx] for match in hitter_matches if match[player_id_idx])
             hitter_count = len(unique_hitters)
             if hitter_count > 1:
                 has_multiple = True
 
-        # Check if pitcher and hitter are the same person (two-way player)
-        same_person = bool(unique_pitchers & unique_hitters)  # Intersection
+        # Check if pitcher and hitter are the same person (two-way player) by comparing IDs
+        same_person = bool(unique_pitcher_ids & unique_hitter_ids)  # Intersection of IDs
 
-        # If total unique players > 1, show ALL matches (pitchers AND hitters) as a list
+        # Check for exact name duplicates (same name appearing in multiple positions)
+        all_names = list(unique_pitchers) + list(unique_hitters)
+        name_counts = {}
+        for name in all_names:
+            name_counts[name] = name_counts.get(name, 0) + 1
+
+        has_exact_duplicates = any(count > 1 for count in name_counts.values())
+
+        # Check if we should prompt for selection
         total_unique_players = len(unique_pitchers | unique_hitters)  # Union for total unique
-        if total_unique_players > 1:
+        if has_exact_duplicates and not same_person:
+            click.echo(f"Multiple players found matching '{player_name}':")
+
+            # Build a list of choices
+            choices = []
+
+            if pitcher_matches:
+                cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+                column_names = [desc[0] for desc in cursor.description]
+                player_col_idx = column_names.index('player')
+                team_col_idx = column_names.index('team')
+                year_col_idx = column_names.index('year')
+
+                for player in sorted(unique_pitchers):
+                    player_matches_filtered = [match for match in pitcher_matches if re.sub(r'[*#+]', '', match[player_col_idx]).strip() == player]
+                    season_2025 = [m for m in player_matches_filtered if m[year_col_idx] == 2025]
+
+                    if season_2025:
+                        teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                        if not teams:
+                            teams = [season_2025[0][team_col_idx]]
+                    else:
+                        most_recent_year = max(m[year_col_idx] for m in player_matches_filtered)
+                        recent_matches = [m for m in player_matches_filtered if m[year_col_idx] == most_recent_year]
+                        teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                        if not teams:
+                            teams = [recent_matches[0][team_col_idx]]
+
+                    team_str = ', '.join(teams) if len(teams) > 1 else teams[0]
+                    choices.append((player, 'pitcher', team_str, player_matches_filtered))
+
+            if hitter_matches:
+                cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+                column_names = [desc[0] for desc in cursor.description]
+                player_col_idx = column_names.index('player')
+                team_col_idx = column_names.index('team')
+                year_col_idx = column_names.index('year')
+
+                for player in sorted(unique_hitters):
+                    player_matches_filtered = [match for match in hitter_matches if re.sub(r'[*#+]', '', match[player_col_idx]).strip() == player]
+                    season_2025 = [m for m in player_matches_filtered if m[year_col_idx] == 2025]
+
+                    if season_2025:
+                        teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                        if not teams:
+                            teams = [season_2025[0][team_col_idx]]
+                    else:
+                        most_recent_year = max(m[year_col_idx] for m in player_matches_filtered)
+                        recent_matches = [m for m in player_matches_filtered if m[year_col_idx] == most_recent_year]
+                        teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                        if not teams:
+                            teams = [recent_matches[0][team_col_idx]]
+
+                    team_str = ', '.join(teams) if len(teams) > 1 else teams[0]
+                    choices.append((player, 'hitter', team_str, player_matches_filtered))
+
+            # Display choices
+            click.echo()
+            for idx, (name, player_type, team, _) in enumerate(choices, 1):
+                click.echo(f"  {idx}. {name} ({team}) - {player_type.upper()}")
+
+            # Prompt user to choose
+            try:
+                choice = click.prompt("\nEnter number (or 0 to cancel)", type=int, default=0)
+                if choice == 0 or choice < 0 or choice > len(choices):
+                    return
+
+                selected_name, selected_type, _, selected_matches = choices[choice - 1]
+
+                # Update matches to only the selected player
+                if selected_type == 'pitcher':
+                    pitcher_matches = selected_matches
+                    hitter_matches = []
+                else:
+                    hitter_matches = selected_matches
+                    pitcher_matches = []
+
+            except (ValueError, click.Abort):
+                return
+        elif total_unique_players > 1:
+            # Multiple different names - show list without choosing
             click.echo(f"Multiple players found matching '{player_name}':")
             if pitcher_matches:
                 if pitcher_count > 1:
