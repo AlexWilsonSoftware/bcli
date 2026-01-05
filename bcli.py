@@ -338,13 +338,13 @@ def render_player(cursor, matches, player_type, stats, year):
         leaders_by_year = {}
 
         if player_type == 'pitcher':
-            lower_is_better = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9'}
+            lower_is_better = {'era'}
             rate_stats_needing_qualification = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9', 'so9', 'w_l_pct', 'era_plus', 'so_bb'}
             qual_field = 'ip'
             qual_threshold = 162
             table_name = 'pitcher_stats'
         else:
-            lower_is_better = {'so', 'gidp', 'cs'}
+            lower_is_better = {}
             rate_stats_needing_qualification = {'ba', 'obp', 'slg', 'ops', 'ops_plus', 'roba', 'rbat_plus'}
             qual_field = 'pa'
             qual_threshold = 502
@@ -428,7 +428,7 @@ def render_player(cursor, matches, player_type, stats, year):
         if player_type == 'pitcher':
             lower_is_better_check = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9'}
         else:
-            lower_is_better_check = {'so', 'gidp', 'cs'}
+            lower_is_better_check = {}
 
         leads_mlb = False
 
@@ -521,14 +521,247 @@ def render_player(cursor, matches, player_type, stats, year):
 
     click.echo()
 
+def compare_players(cursor, player1_name, player2_name, stats, year):
+    """Compare two players' stats side by side"""
+    # Find both players
+    pitcher1_matches, hitter1_matches = find_player(cursor, player1_name)
+    pitcher2_matches, hitter2_matches = find_player(cursor, player2_name)
+
+    # Check if players were found
+    if not pitcher1_matches and not hitter1_matches:
+        click.echo(f"Error: No players found matching '{player1_name}'")
+        return
+    if not pitcher2_matches and not hitter2_matches:
+        click.echo(f"Error: No players found matching '{player2_name}'")
+        return
+
+    # Determine player types
+    player1_is_twoway = bool(pitcher1_matches and hitter1_matches)
+    player2_is_twoway = bool(pitcher2_matches and hitter2_matches)
+
+    # If no year specified, default to 2025
+    if not year:
+        year_filter = 2025
+    else:
+        if len(year) == 2 and year.isdigit():
+            year_filter = int(f"20{year}")
+        elif len(year) == 4 and year.isdigit():
+            year_filter = int(year)
+        else:
+            click.echo(f"Error: Invalid year format '{year}'. Use 2022 or 22.")
+            return
+
+    # Determine which type of comparison to do
+    # For simplicity, if both are pitchers or both are hitters, compare that type
+    # If one is two-way, prefer pitcher comparison if other is pitcher, else hitter
+    player1_type = None
+    player2_type = None
+
+    if pitcher1_matches and pitcher2_matches:
+        player1_type = 'pitcher'
+        player2_type = 'pitcher'
+        player1_matches = pitcher1_matches
+        player2_matches = pitcher2_matches
+    elif hitter1_matches and hitter2_matches:
+        player1_type = 'hitter'
+        player2_type = 'hitter'
+        player1_matches = hitter1_matches
+        player2_matches = hitter2_matches
+    else:
+        click.echo(f"Error: Cannot compare players of different types (pitcher vs hitter)")
+        return
+
+    # Get column names
+    cursor.execute(f"SELECT * FROM {player1_type}_stats LIMIT 1")
+    column_names = [desc[0] for desc in cursor.description]
+
+    # Filter by year
+    year_col_idx = column_names.index('year')
+    player1_year_data = [m for m in player1_matches if m[year_col_idx] == year_filter]
+    player2_year_data = [m for m in player2_matches if m[year_col_idx] == year_filter]
+
+    if not player1_year_data:
+        click.echo(f"Error: No data found for '{player1_name}' in {year_filter}")
+        return
+    if not player2_year_data:
+        click.echo(f"Error: No data found for '{player2_name}' in {year_filter}")
+        return
+
+    # Handle multiple entries (e.g., traded players) - prefer 2TM/3TM entries as they have combined stats
+    player1_data = None
+    player2_data = None
+
+    team_col_idx = column_names.index('team')
+
+    # For player 1, prefer 2TM/3TM (combined stats) if available
+    for entry in player1_year_data:
+        if '2TM' in entry[team_col_idx] or '3TM' in entry[team_col_idx]:
+            player1_data = entry
+            break
+    if not player1_data:
+        player1_data = player1_year_data[0]
+
+    # For player 2, prefer 2TM/3TM (combined stats) if available
+    for entry in player2_year_data:
+        if '2TM' in entry[team_col_idx] or '3TM' in entry[team_col_idx]:
+            player2_data = entry
+            break
+    if not player2_data:
+        player2_data = player2_year_data[0]
+
+    # Convert to dicts
+    player1_dict = dict(zip(column_names, player1_data))
+    player2_dict = dict(zip(column_names, player2_data))
+
+    # Get player names
+    player1_full_name = player1_dict['player']
+    player2_full_name = player2_dict['player']
+
+    # Determine which stats to display
+    if stats:
+        # Custom stats
+        stat_list = []
+        for stat in stats:
+            stat_lower = stat.lower()
+            if stat_lower == 'w-l%':
+                stat_key = 'w_l_pct'
+                stat_label = 'W-L%'
+            elif stat_lower == 'so/bb':
+                stat_key = 'so_bb'
+                stat_label = 'SO/BB'
+            elif stat_lower == 'era+':
+                stat_key = 'era_plus'
+                stat_label = 'ERA+'
+            elif stat_lower == 'ops+':
+                stat_key = 'ops_plus'
+                stat_label = 'OPS+'
+            elif stat_lower == 'rbat+':
+                stat_key = 'rbat_plus'
+                stat_label = 'Rbat+'
+            elif stat_lower == '2b':
+                stat_key = 'doubles'
+                stat_label = '2B'
+            elif stat_lower == '3b':
+                stat_key = 'triples'
+                stat_label = '3B'
+            elif stat_lower == 'h/9':
+                stat_key = 'h9'
+                stat_label = 'H/9'
+            elif stat_lower == 'hr/9':
+                stat_key = 'hr9'
+                stat_label = 'HR/9'
+            elif stat_lower == 'bb/9':
+                stat_key = 'bb9'
+                stat_label = 'BB/9'
+            elif stat_lower == 'so/9':
+                stat_key = 'so9'
+                stat_label = 'SO/9'
+            else:
+                stat_key = stat_lower.replace('-', '_').replace('/', '_')
+                stat_label = stat.upper()
+
+            if stat_key in column_names:
+                stat_list.append((stat_label, stat_key))
+    else:
+        # Default stats based on player type
+        if player1_type == 'pitcher':
+            stat_list = [
+                ('WAR', 'war'), ('W', 'w'), ('L', 'l'), ('ERA', 'era'),
+                ('G', 'g'), ('GS', 'gs'), ('IP', 'ip'), ('H', 'h'),
+                ('R', 'r'), ('ER', 'er'), ('HR', 'hr'), ('BB', 'bb'),
+                ('SO', 'so'), ('WHIP', 'whip'), ('ERA+', 'era_plus'),
+                ('FIP', 'fip'), ('SO/9', 'so9'), ('BB/9', 'bb9')
+            ]
+        else:
+            stat_list = [
+                ('WAR', 'war'), ('G', 'g'), ('PA', 'pa'), ('AB', 'ab'),
+                ('R', 'r'), ('H', 'h'), ('2B', 'doubles'), ('3B', 'triples'),
+                ('HR', 'hr'), ('RBI', 'rbi'), ('SB', 'sb'), ('BB', 'bb'),
+                ('SO', 'so'), ('BA', 'ba'), ('OBP', 'obp'), ('SLG', 'slg'),
+                ('OPS', 'ops'), ('OPS+', 'ops_plus')
+            ]
+
+    # Define which stats are "lower is better"
+    lower_is_better = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9', 'so', 'gidp', 'cs'}
+
+    # Print header
+    click.echo(f"\n{player1_full_name} vs {player2_full_name} ({year_filter})")
+    click.echo("=" * 80)
+
+    # Calculate column widths
+    stat_col_width = max(len(label) for label, _ in stat_list)
+    player1_col_width = len(player1_full_name)
+    player2_col_width = len(player2_full_name)
+
+    # Print column headers
+    header = f"{'Stat'.ljust(stat_col_width)}  {player1_full_name.ljust(player1_col_width)}  {player2_full_name.ljust(player2_col_width)}"
+    click.echo(header)
+    click.echo("-" * len(header))
+
+    # Green color code
+    green = '\x1b[32m'
+    bold = '\x1b[1m'
+    italic = '\x1b[3m'
+    reset = '\x1b[0m'
+
+    # Print each stat
+    for stat_label, stat_key in stat_list:
+        val1 = player1_dict.get(stat_key)
+        val2 = player2_dict.get(stat_key)
+
+        # Format values
+        val1_str = format_stat_value(val1) if val1 is not None else 'N/A'
+        val2_str = format_stat_value(val2) if val2 is not None else 'N/A'
+
+        # Determine which is better
+        val1_formatted = val1_str
+        val2_formatted = val2_str
+
+        if val1 is not None and val2 is not None and val1_str != 'N/A' and val2_str != 'N/A':
+            try:
+                val1_float = float(val1)
+                val2_float = float(val2)
+
+                if stat_key in lower_is_better:
+                    # Lower is better
+                    if val1_float < val2_float:
+                        val1_formatted = f"{green}{bold}{italic}{val1_str}{reset}"
+                    elif val2_float < val1_float:
+                        val2_formatted = f"{green}{bold}{italic}{val2_str}{reset}"
+                else:
+                    # Higher is better
+                    if val1_float > val2_float:
+                        val1_formatted = f"{green}{bold}{italic}{val1_str}{reset}"
+                    elif val2_float > val1_float:
+                        val2_formatted = f"{green}{bold}{italic}{val2_str}{reset}"
+            except (ValueError, TypeError):
+                pass
+
+        # Print row - need to account for ANSI codes in padding
+        val1_display_len = len(val1_str)
+        val2_display_len = len(val2_str)
+
+        line = f"{stat_label.ljust(stat_col_width)}  {val1_formatted}{' ' * (player1_col_width - val1_display_len)}  {val2_formatted}{' ' * (player2_col_width - val2_display_len)}"
+        click.echo(line)
+
+    click.echo()
+
 @click.command()
 @click.argument('player_name')
 @click.option('-s', '--stats', multiple=True, help='Specific stats to display (e.g., war era)')
 @click.option('-y', '--year', help='Filter by year (e.g., 2022 or 22)')
-def main(player_name, stats, year):
+@click.option('-c', '--compare', help='Compare with another player')
+def main(player_name, stats, year, compare):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # If compare flag is set, use comparison mode
+        if compare:
+            compare_players(cursor, player_name, compare, stats, year)
+            cursor.close()
+            conn.close()
+            return
 
         pitcher_matches, hitter_matches = find_player(cursor, player_name)
 
