@@ -4,11 +4,17 @@ import sqlite3
 import os
 import re
 import mlb_api
+import unicodedata
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'baseball_stats.db')
 
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
+
+def remove_accents(text):
+    """Remove accents from unicode string"""
+    nfd = unicodedata.normalize('NFD', text)
+    return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
 def parse_name_query(name_query):
     if '.' not in name_query:
@@ -23,38 +29,102 @@ def parse_name_query(name_query):
 def find_player(cursor, name_query):
     first_pattern, last_pattern = parse_name_query(name_query)
 
+    # Remove accents from search patterns
+    if first_pattern is None:
+        search_pattern = remove_accents(last_pattern.lower())
+        first_search = None
+        last_search = search_pattern
+    else:
+        first_search = remove_accents(first_pattern.lower())
+        last_search = remove_accents(last_pattern.lower())
+        search_pattern = f'{first_search}{last_search}'
+
+    # First try exact match with original query
     if first_pattern is None:
         pattern = f'%{last_pattern.lower()}%'
-        cursor.execute('''
-            SELECT * FROM pitcher_stats
-            WHERE LOWER(player) LIKE ? AND ip >= 5
-            ORDER BY year ASC, team
-        ''', (pattern,))
-        pitcher_matches = cursor.fetchall()
-
-        cursor.execute('''
-            SELECT * FROM hitter_stats
-            WHERE LOWER(player) LIKE ? AND ab >= 5
-            ORDER BY year ASC, team
-        ''', (pattern,))
-        hitter_matches = cursor.fetchall()
     else:
         pattern = f'{first_pattern.lower()}%{last_pattern.lower()}%'
-        cursor.execute('''
-            SELECT * FROM pitcher_stats
-            WHERE LOWER(player) LIKE ? AND ip >= 5
-            ORDER BY year ASC, team
-        ''', (pattern,))
-        pitcher_matches = cursor.fetchall()
 
-        cursor.execute('''
-            SELECT * FROM hitter_stats
-            WHERE LOWER(player) LIKE ? AND ab >= 5
-            ORDER BY year ASC, team
-        ''', (pattern,))
-        hitter_matches = cursor.fetchall()
+    cursor.execute('''
+        SELECT * FROM pitcher_stats
+        WHERE LOWER(player) LIKE ? AND ip >= 5
+        ORDER BY year ASC, team
+    ''', (pattern,))
+    pitcher_matches = cursor.fetchall()
+
+    cursor.execute('''
+        SELECT * FROM hitter_stats
+        WHERE LOWER(player) LIKE ? AND ab >= 5
+        ORDER BY year ASC, team
+    ''', (pattern,))
+    hitter_matches = cursor.fetchall()
+
+    # If no exact matches, try accent-insensitive matching
+    if not pitcher_matches and not hitter_matches:
+        cursor.execute('SELECT * FROM pitcher_stats WHERE ip >= 5 ORDER BY year ASC, team')
+        all_pitchers = cursor.fetchall()
+
+        cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+        column_names = [desc[0] for desc in cursor.description]
+        player_col_idx = column_names.index('player')
+
+        pitcher_matches = []
+        for row in all_pitchers:
+            normalized_name = remove_accents(row[player_col_idx].lower())
+            if first_search is None:
+                if last_search in normalized_name:
+                    pitcher_matches.append(row)
+            else:
+                # For dot notation: check if starts with first pattern and contains last pattern
+                if normalized_name.startswith(first_search) and last_search in normalized_name:
+                    pitcher_matches.append(row)
+
+        cursor.execute('SELECT * FROM hitter_stats WHERE ab >= 5 ORDER BY year ASC, team')
+        all_hitters = cursor.fetchall()
+
+        cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+        column_names = [desc[0] for desc in cursor.description]
+        player_col_idx = column_names.index('player')
+
+        hitter_matches = []
+        for row in all_hitters:
+            normalized_name = remove_accents(row[player_col_idx].lower())
+            if first_search is None:
+                if last_search in normalized_name:
+                    hitter_matches.append(row)
+            else:
+                # For dot notation: check if starts with first pattern and contains last pattern
+                if normalized_name.startswith(first_search) and last_search in normalized_name:
+                    hitter_matches.append(row)
 
     return pitcher_matches, hitter_matches
+
+def fuzzy_find_player(cursor, name_query):
+    """Find players using accent-insensitive fuzzy matching"""
+    # Remove accents from search query
+    normalized_query = remove_accents(name_query.lower())
+
+    # Get all unique player names
+    cursor.execute('SELECT DISTINCT player FROM pitcher_stats WHERE ip >= 5')
+    pitchers = [row[0] for row in cursor.fetchall()]
+
+    cursor.execute('SELECT DISTINCT player FROM hitter_stats WHERE ab >= 5')
+    hitters = [row[0] for row in cursor.fetchall()]
+
+    # Find matches by comparing accent-removed names
+    fuzzy_pitcher_matches = []
+    for pitcher in pitchers:
+        normalized_pitcher = remove_accents(pitcher.lower())
+        if normalized_query in normalized_pitcher:
+            fuzzy_pitcher_matches.append(pitcher)
+
+    fuzzy_hitter_matches = []
+    for hitter in hitters:
+        normalized_hitter = remove_accents(hitter.lower())
+        if normalized_query in normalized_hitter:
+            fuzzy_hitter_matches.append(hitter)
+
+    return fuzzy_pitcher_matches, fuzzy_hitter_matches
 
 def format_stat_value(value):
     if value is None:
@@ -160,6 +230,37 @@ def get_full_team_name(abbr):
         'WSN': 'Washington Nationals'
     }
     return team_mapping.get(abbr, abbr)
+
+def list_matching_players(cursor, matches, player_type):
+    """List all unique matching players without showing full stats"""
+    cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
+    column_names = [desc[0] for desc in cursor.description]
+    player_col_idx = column_names.index('player')
+    team_col_idx = column_names.index('team')
+    year_col_idx = column_names.index('year')
+
+    unique_players = set(match[player_col_idx] for match in matches)
+
+    for player in sorted(unique_players):
+        player_matches = [match for match in matches if match[player_col_idx] == player]
+
+        season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
+
+        if season_2025:
+            teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+            if not teams:
+                teams = [season_2025[0][team_col_idx]]
+        else:
+            most_recent_year = max(m[year_col_idx] for m in player_matches)
+            recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
+            teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+            if not teams:
+                teams = [recent_matches[0][team_col_idx]]
+
+        if len(teams) > 1:
+            click.echo(f"  - {player} ({', '.join(teams)})")
+        else:
+            click.echo(f"  - {player} ({teams[0]})")
 
 def render_player(cursor, matches, player_type, stats, year, comparison_mode=None):
     cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
@@ -723,9 +824,10 @@ def render_player(cursor, matches, player_type, stats, year, comparison_mode=Non
         print_row(row, historical_data[row_idx])
 
     if season_2025_rows and historical_rows:
-        last_historical_year = historical_data[-1].get('year')
-        if last_historical_year and last_historical_year < 2024:
-            missing_years = list(range(last_historical_year + 1, 2025))
+        # Find the most recent historical year (not just the last in the list)
+        most_recent_historical_year = max(row.get('year') for row in historical_data if row.get('year'))
+        if most_recent_historical_year and most_recent_historical_year < 2024:
+            missing_years = list(range(most_recent_historical_year + 1, 2025))
             gap_msg = f"[Did not play in {', '.join(map(str, missing_years))}]"
             click.echo(gap_msg)
 
@@ -1928,7 +2030,91 @@ def main(player_name, stats, year, compare, compare_team, compare_league, versus
         pitcher_matches, hitter_matches = find_player(cursor, player_name)
 
         if len(pitcher_matches) == 0 and len(hitter_matches) == 0:
-            click.echo(f"Error: No players found matching '{player_name}'")
+            # Try fuzzy matching with accent removal
+            fuzzy_pitchers, fuzzy_hitters = fuzzy_find_player(cursor, player_name)
+
+            if not fuzzy_pitchers and not fuzzy_hitters:
+                click.echo(f"Error: No players found matching '{player_name}'")
+                return
+
+            # Show fuzzy matches and ask user to pick
+            all_matches = []
+            if fuzzy_pitchers:
+                all_matches.extend([(p, 'pitcher') for p in fuzzy_pitchers])
+            if fuzzy_hitters:
+                all_matches.extend([(h, 'hitter') for h in fuzzy_hitters])
+
+            click.echo(f"No exact match found for '{player_name}'. Did you mean:")
+            for idx, (name, player_type) in enumerate(all_matches, 1):
+                click.echo(f"  {idx}. {name} ({player_type})")
+
+            if len(all_matches) == 1:
+                choice = click.confirm(f"\nShow stats for {all_matches[0][0]}?", default=True)
+                if not choice:
+                    return
+                player_name = all_matches[0][0]
+            else:
+                try:
+                    choice = click.prompt("\nEnter number (or 0 to cancel)", type=int, default=0)
+                    if choice == 0 or choice < 0 or choice > len(all_matches):
+                        return
+                    player_name = all_matches[choice - 1][0]
+                except (ValueError, click.Abort):
+                    return
+
+            # Re-search with the corrected name
+            pitcher_matches, hitter_matches = find_player(cursor, player_name)
+
+            if len(pitcher_matches) == 0 and len(hitter_matches) == 0:
+                click.echo(f"Error: No players found matching '{player_name}'")
+                return
+
+        # Check for multiple unique players in EITHER category before rendering
+        has_multiple = False
+
+        # Check pitchers
+        pitcher_count = 0
+        unique_pitchers = set()
+        if pitcher_matches:
+            cursor.execute(f"SELECT * FROM pitcher_stats LIMIT 1")
+            column_names = [desc[0] for desc in cursor.description]
+            player_col_idx = column_names.index('player')
+            unique_pitchers = set(re.sub(r'[*#+]', '', match[player_col_idx]).strip() for match in pitcher_matches)
+            pitcher_count = len(unique_pitchers)
+            if pitcher_count > 1:
+                has_multiple = True
+
+        # Check hitters
+        hitter_count = 0
+        unique_hitters = set()
+        if hitter_matches:
+            cursor.execute(f"SELECT * FROM hitter_stats LIMIT 1")
+            column_names = [desc[0] for desc in cursor.description]
+            player_col_idx = column_names.index('player')
+            unique_hitters = set(re.sub(r'[*#+]', '', match[player_col_idx]).strip() for match in hitter_matches)
+            hitter_count = len(unique_hitters)
+            if hitter_count > 1:
+                has_multiple = True
+
+        # Check if pitcher and hitter are the same person (two-way player)
+        same_person = bool(unique_pitchers & unique_hitters)  # Intersection
+
+        # If total unique players > 1, show ALL matches (pitchers AND hitters) as a list
+        total_unique_players = len(unique_pitchers | unique_hitters)  # Union for total unique
+        if total_unique_players > 1:
+            click.echo(f"Multiple players found matching '{player_name}':")
+            if pitcher_matches:
+                if pitcher_count > 1:
+                    click.echo("\nPITCHERS:")
+                else:
+                    click.echo("\nPITCHER:")
+                list_matching_players(cursor, pitcher_matches, 'pitcher')
+            if hitter_matches:
+                if hitter_count > 1:
+                    click.echo("\nHITTERS:")
+                else:
+                    click.echo("\nHITTER:")
+                list_matching_players(cursor, hitter_matches, 'hitter')
             return
 
         if pitcher_matches and hitter_matches:
