@@ -143,21 +143,16 @@ def render_player(cursor, matches, player_type, stats, year):
             click.echo(f"No {player_type} data for {year_filter}")
             return
 
-    first_player = dict(zip(column_names, matches[0]))
-    player_name = first_player['player']
-    click.echo(f"\n{first_player['player']} ({player_type.upper()})")
-    click.echo("=" * 50)
-
-    column_names = [desc[0] for desc in cursor.description]
-
+    # Check for multiple players BEFORE printing header
     if len(matches) > 1:
         player_col_idx = get_column_index(cursor, 'player')
         unique_players = set(match[player_col_idx] for match in matches)
 
         if len(unique_players) > 1:
-            click.echo(f"Error: Multiple players found matching '{player_name}':")
             team_col_idx = get_column_index(cursor, 'team')
             year_col_idx = get_column_index(cursor, 'year')
+
+            click.echo(f"Error: Multiple {player_type}s found matching:")
 
             for player in sorted(unique_players):
                 player_matches = [match for match in matches if match[player_col_idx] == player]
@@ -180,6 +175,12 @@ def render_player(cursor, matches, player_type, stats, year):
                 else:
                     click.echo(f"  - {player} ({teams[0]})")
             return
+
+    # Now we know there's only one player, print the header
+    first_player = dict(zip(column_names, matches[0]))
+    player_name = first_player['player']
+    click.echo(f"\n{player_name} ({player_type.upper()})")
+    click.echo("=" * 50)
 
     if stats:
         # Build custom stats list starting with base columns
@@ -575,6 +576,57 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
     cursor.execute(f"SELECT * FROM {player1_type}_stats LIMIT 1")
     column_names = [desc[0] for desc in cursor.description]
 
+    # Check for multiple players for player 1
+    player_col_idx = column_names.index('player')
+    unique_players1 = set(match[player_col_idx] for match in player1_matches)
+    if len(unique_players1) > 1:
+        team_col_idx = column_names.index('team')
+        year_col_idx = column_names.index('year')
+        click.echo(f"Error: Multiple {player1_type}s found matching '{player1_name}':")
+        for player in sorted(unique_players1):
+            player_matches = [match for match in player1_matches if match[player_col_idx] == player]
+            season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
+            if season_2025:
+                teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                if not teams:
+                    teams = [season_2025[0][team_col_idx]]
+            else:
+                most_recent_year = max(m[year_col_idx] for m in player_matches)
+                recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
+                teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                if not teams:
+                    teams = [recent_matches[0][team_col_idx]]
+            if len(teams) > 1:
+                click.echo(f"  - {player} ({', '.join(teams)})")
+            else:
+                click.echo(f"  - {player} ({teams[0]})")
+        return
+
+    # Check for multiple players for player 2
+    unique_players2 = set(match[player_col_idx] for match in player2_matches)
+    if len(unique_players2) > 1:
+        team_col_idx = column_names.index('team')
+        year_col_idx = column_names.index('year')
+        click.echo(f"Error: Multiple {player2_type}s found matching '{player2_name}':")
+        for player in sorted(unique_players2):
+            player_matches = [match for match in player2_matches if match[player_col_idx] == player]
+            season_2025 = [m for m in player_matches if m[year_col_idx] == 2025]
+            if season_2025:
+                teams = [m[team_col_idx] for m in season_2025 if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                if not teams:
+                    teams = [season_2025[0][team_col_idx]]
+            else:
+                most_recent_year = max(m[year_col_idx] for m in player_matches)
+                recent_matches = [m for m in player_matches if m[year_col_idx] == most_recent_year]
+                teams = [m[team_col_idx] for m in recent_matches if '2TM' not in m[team_col_idx] and '3TM' not in m[team_col_idx]]
+                if not teams:
+                    teams = [recent_matches[0][team_col_idx]]
+            if len(teams) > 1:
+                click.echo(f"  - {player} ({', '.join(teams)})")
+            else:
+                click.echo(f"  - {player} ({teams[0]})")
+        return
+
     # Filter by year
     year_col_idx = column_names.index('year')
     player1_year_data = [m for m in player1_matches if m[year_col_idx] == year_filter]
@@ -681,8 +733,7 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
                 ('OPS', 'ops'), ('OPS+', 'ops_plus')
             ]
 
-    # Define which stats are "lower is better"
-    lower_is_better = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9', 'so', 'gidp', 'cs'}
+    lower_is_better = {'era'}
 
     # Print header
     click.echo(f"\n{player1_full_name} vs {player2_full_name} ({year_filter})")
