@@ -1,0 +1,24 @@
+# SQLite database
+baseball_stats.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+
+# CSV data files (optional - remove this line if you want to commit your CSV)
+*.csv
