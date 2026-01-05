@@ -123,7 +123,44 @@ def get_stat_category(stat_key):
     else:
         return 'common'
 
-def render_player(cursor, matches, player_type, stats, year):
+def get_full_team_name(abbr):
+    """Convert team abbreviation to full name used in team stats"""
+    team_mapping = {
+        'ARI': 'Arizona Diamondbacks',
+        'ATH': 'Athletics',
+        'ATL': 'Atlanta Braves',
+        'BAL': 'Baltimore Orioles',
+        'BOS': 'Boston Red Sox',
+        'CHC': 'Chicago Cubs',
+        'CHW': 'Chicago White Sox',
+        'CIN': 'Cincinnati Reds',
+        'CLE': 'Cleveland Guardians',
+        'COL': 'Colorado Rockies',
+        'DET': 'Detroit Tigers',
+        'HOU': 'Houston Astros',
+        'KCR': 'Kansas City Royals',
+        'LAA': 'Los Angeles Angels',
+        'LAD': 'Los Angeles Dodgers',
+        'MIA': 'Miami Marlins',
+        'MIL': 'Milwaukee Brewers',
+        'MIN': 'Minnesota Twins',
+        'NYM': 'New York Mets',
+        'NYY': 'New York Yankees',
+        'OAK': 'Oakland Athletics',
+        'PHI': 'Philadelphia Phillies',
+        'PIT': 'Pittsburgh Pirates',
+        'SDP': 'San Diego Padres',
+        'SEA': 'Seattle Mariners',
+        'SFG': 'San Francisco Giants',
+        'STL': 'St. Louis Cardinals',
+        'TBR': 'Tampa Bay Rays',
+        'TEX': 'Texas Rangers',
+        'TOR': 'Toronto Blue Jays',
+        'WSN': 'Washington Nationals'
+    }
+    return team_mapping.get(abbr, abbr)
+
+def render_player(cursor, matches, player_type, stats, year, comparison_mode=None):
     cursor.execute(f"SELECT * FROM {player_type}_stats LIMIT 1")
     column_names = [desc[0] for desc in cursor.description]
 
@@ -272,6 +309,70 @@ def render_player(cursor, matches, player_type, stats, year):
                 ('Pos', 'pos'), ('Awards', 'awards'),
             ]
 
+    # If comparison mode, filter stats early and fetch averages
+    comparison_averages = {}
+    if comparison_mode:
+        stat_mapping_hitter = {
+            'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
+            'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
+            'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
+            'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
+            'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
+            'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
+        }
+        stat_mapping_pitcher = {
+            'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
+            'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
+            'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
+            'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
+            'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
+            'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
+            'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
+            'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
+        }
+        stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+
+        team_table = 'team_pitcher_stats' if player_type == 'pitcher' else 'team_hitter_stats'
+        years = set(dict(zip(column_names, m)).get('year') for m in matches)
+
+        for yr in years:
+            if comparison_mode == 'league':
+                cursor.execute(f"SELECT * FROM {team_table} WHERE year = ? AND tm = ?", (yr, 'League Average'))
+            else:  # team mode
+                year_matches = [m for m in matches if dict(zip(column_names, m)).get('year') == yr]
+                if year_matches:
+                    player_team = dict(zip(column_names, year_matches[0])).get('team')
+                    if player_team and '2TM' not in player_team and '3TM' not in player_team:
+                        team_full_name = get_full_team_name(player_team)
+                        cursor.execute(f"SELECT * FROM {team_table} WHERE year = ? AND tm = ?", (yr, team_full_name))
+                    else:
+                        continue
+
+            avg_row = cursor.fetchone()
+            if avg_row:
+                avg_column_names = [desc[0] for desc in cursor.description]
+                comparison_averages[yr] = dict(zip(avg_column_names, avg_row))
+
+        # Filter all_stats to only show comparable stats
+        if comparison_averages:
+            sample_avg = next(iter(comparison_averages.values()))
+
+            # Define which stats to show for comparison mode
+            if player_type == 'pitcher':
+                comparison_stats = {'era', 'w_l_pct', 'whip', 'fip', 'era_plus', 'h9', 'hr9', 'bb9', 'so9', 'so_bb'}
+            else:  # hitter
+                # roba and rbat_plus not available in team stats
+                comparison_stats = {'ba', 'obp', 'slg', 'ops', 'ops_plus'}
+
+            filtered_stats = []
+            for label, key in all_stats:
+                if key in ['year', 'age', 'team', 'lg', 'awards']:
+                    filtered_stats.append((label, key))
+                # Only include if in comparison_stats, has mapping, and exists in avg data
+                elif key in comparison_stats and key in stat_mapping and stat_mapping[key] in sample_avg:
+                    filtered_stats.append((label, key))
+            all_stats = filtered_stats
+
     # Table rendering logic (shared by both filtered and non-filtered stats)
     season_2025_rows = []
     season_2025_data = []
@@ -333,13 +434,50 @@ def render_player(cursor, matches, player_type, stats, year):
         max_width = len(label)
         for row in all_rows:
             max_width = max(max_width, len(row[col_idx]))
+
+        # In comparison mode, account for the average row labels in the year column
+        if comparison_mode and key == 'year' and comparison_averages:
+            comparison_label = "League Avg" if comparison_mode == 'league' else "Team Avg"
+            for yr in comparison_averages.keys():
+                avg_label_len = len(f"{yr} {comparison_label}")
+                max_width = max(max_width, avg_label_len)
+
+        # In comparison mode, account for the average values in stat columns
+        if comparison_mode and comparison_averages and key not in ['year', 'age', 'team', 'lg', 'awards']:
+            stat_mapping_hitter = {
+                'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
+                'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
+                'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
+                'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
+                'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
+                'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
+            }
+            stat_mapping_pitcher = {
+                'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
+                'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
+                'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
+                'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
+                'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
+                'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
+                'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
+                'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
+            }
+            mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+            avg_key = mapping.get(key)
+            if avg_key:
+                for yr, avg_dict in comparison_averages.items():
+                    if avg_key in avg_dict:
+                        val = avg_dict[avg_key]
+                        val_str = format_stat_value(val) if val is not None else ''
+                        max_width = max(max_width, len(val_str))
+
         col_widths.append(max_width)
 
     def calculate_yearly_league_leaders():
         leaders_by_year = {}
 
         if player_type == 'pitcher':
-            lower_is_better = {'era'}
+            lower_is_better = {'era', 'fip', 'whip', 'h9', 'bb9'}
             rate_stats_needing_qualification = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9', 'so9', 'w_l_pct', 'era_plus', 'so_bb'}
             qual_field = 'ip'
             qual_threshold = 162
@@ -404,12 +542,89 @@ def render_player(cursor, matches, player_type, stats, year):
 
     league_leaders = calculate_yearly_league_leaders()
 
+    # Get stat_mapping for use in comparison formatting
+    stat_mapping_hitter = {
+        'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
+        'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
+        'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
+        'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
+        'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
+        'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
+    }
+    stat_mapping_pitcher = {
+        'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
+        'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
+        'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
+        'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
+        'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
+        'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
+        'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
+        'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
+    }
+    stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+
     header_parts = []
     for idx, (label, key) in enumerate(all_stats):
         header_parts.append(label.ljust(col_widths[idx]))
     click.echo("  ".join(header_parts))
 
     def get_stat_formatting(year, player_league, player_data, stat_key):
+        # If comparison mode, check if above average
+        if comparison_mode and year in comparison_averages:
+            avg_dict = comparison_averages[year]
+
+            # Map player stat keys to team stat keys
+            stat_mapping_hitter = {
+                'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
+                'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
+                'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
+                'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
+                'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
+                'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
+            }
+
+            stat_mapping_pitcher = {
+                'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
+                'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
+                'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
+                'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
+                'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
+                'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
+                'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
+                'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
+            }
+
+            stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+            avg_key = stat_mapping.get(stat_key)
+
+            if avg_key:
+                avg_val = avg_dict.get(avg_key)
+                player_val = player_data.get(stat_key)
+
+                if avg_val is not None and player_val is not None:
+                    try:
+                        avg_float = float(avg_val)
+                        player_float = float(player_val)
+
+                        # Lower is better for these stats
+                        lower_is_better_stats = {'era', 'fip', 'whip', 'h9', 'bb9'}
+
+                        if stat_key in lower_is_better_stats:
+                            if player_float < avg_float:
+                                return '\x1b[32m\x1b[1m\x1b[3m', '\x1b[0m'  # Green for below avg
+                            elif player_float > avg_float:
+                                return '\x1b[38;5;208m\x1b[1m\x1b[3m', '\x1b[0m'  # Orange for above avg
+                        else:
+                            if player_float > avg_float:
+                                return '\x1b[32m\x1b[1m\x1b[3m', '\x1b[0m'  # Green for above avg
+                            elif player_float < avg_float:
+                                return '\x1b[38;5;208m\x1b[1m\x1b[3m', '\x1b[0m'  # Orange for below avg
+                    except (ValueError, TypeError):
+                        pass
+
+            return '', ''
+
+        # Normal league leader logic
         if year not in league_leaders or stat_key not in league_leaders[year]:
             return '', ''
 
@@ -427,7 +642,7 @@ def render_player(cursor, matches, player_type, stats, year):
             return '', ''
 
         if player_type == 'pitcher':
-            lower_is_better_check = {'era', 'whip', 'fip', 'h9', 'hr9', 'bb9'}
+            lower_is_better_check = {'era', 'fip', 'whip', 'h9', 'bb9'}
         else:
             lower_is_better_check = {}
 
@@ -520,7 +735,229 @@ def render_player(cursor, matches, player_type, stats, year):
         for row_idx, row in enumerate(season_2025_rows):
             print_row(row, season_2025_data[row_idx])
 
+    # Print comparison averages if in comparison mode
+    if comparison_mode and comparison_averages:
+        click.echo()
+        click.echo("-" * sum(col_widths) + "-" * (len(col_widths) * 2))
+
+        comparison_label = "League Avg" if comparison_mode == 'league' else "Team Avg"
+
+        for yr in sorted(comparison_averages.keys(), reverse=False):
+            avg_dict = comparison_averages[yr]
+            row_values = []
+
+            for label, key in all_stats:
+                if key == 'year':
+                    row_values.append(f"{yr} {comparison_label}")
+                elif key in ['age', 'team', 'lg', 'awards']:
+                    row_values.append('')
+                else:
+                    avg_key = stat_mapping.get(key)
+                    if avg_key and avg_key in avg_dict:
+                        val = avg_dict[avg_key]
+                        row_values.append(format_stat_value(val) if val is not None else '')
+                    else:
+                        row_values.append('')
+
+            row_parts = []
+            for col_idx, value in enumerate(row_values):
+                padded_value = value.ljust(col_widths[col_idx])
+                row_parts.append(padded_value)
+
+            line = "  ".join(row_parts)
+            click.echo(line)
+
     click.echo()
+
+def compare_to_average_display(player_dict, avg_dict, player_name, comparison_name, year, player_type, stats, is_league):
+    """Display player stats compared to team/league average with green highlighting"""
+    # Map player stats to team stats (different column names)
+    stat_mapping_hitter = {
+        'g': 'g', 'pa': 'pa', 'ab': 'ab', 'r': 'r', 'h': 'h',
+        'doubles': 'doubles', 'triples': 'triples', 'hr': 'hr', 'rbi': 'rbi',
+        'sb': 'sb', 'cs': 'cs', 'bb': 'bb', 'so': 'so',
+        'ba': 'ba', 'obp': 'obp', 'slg': 'slg', 'ops': 'ops',
+        'ops_plus': 'ops_plus', 'tb': 'tb', 'gidp': 'gdp',
+        'hbp': 'hbp', 'sh': 'sh', 'sf': 'sf', 'ibb': 'ibb'
+    }
+
+    stat_mapping_pitcher = {
+        'w': 'w', 'l': 'l', 'w_l_pct': 'w_l_pct', 'era': 'era',
+        'g': 'g', 'gs': 'gs', 'gf': 'gf', 'cg': 'cg',
+        'sho': 'c_sho', 'sv': 'sv', 'ip': 'ip', 'h': 'h',
+        'r': 'r', 'er': 'er', 'hr': 'hr', 'bb': 'bb',
+        'ibb': 'ibb', 'so': 'so', 'hbp': 'hbp', 'bk': 'bk',
+        'wp': 'wp', 'bf': 'bf', 'era_plus': 'era_plus',
+        'fip': 'fip', 'whip': 'whip', 'h9': 'h9', 'hr9': 'hr9',
+        'bb9': 'bb9', 'so9': 'so9', 'so_bb': 'so_w'
+    }
+
+    stat_mapping = stat_mapping_pitcher if player_type == 'pitcher' else stat_mapping_hitter
+
+    # Determine which stats to display
+    if stats:
+        stat_list = []
+        for stat in stats:
+            stat_lower = stat.lower()
+            if stat_lower == 'w-l%':
+                stat_key = 'w_l_pct'
+                stat_label = 'W-L%'
+            elif stat_lower == 'so/bb':
+                stat_key = 'so_bb'
+                stat_label = 'SO/BB'
+            elif stat_lower == 'era+':
+                stat_key = 'era_plus'
+                stat_label = 'ERA+'
+            elif stat_lower == 'ops+':
+                stat_key = 'ops_plus'
+                stat_label = 'OPS+'
+            elif stat_lower == '2b':
+                stat_key = 'doubles'
+                stat_label = '2B'
+            elif stat_lower == '3b':
+                stat_key = 'triples'
+                stat_label = '3B'
+            elif stat_lower == 'h/9':
+                stat_key = 'h9'
+                stat_label = 'H/9'
+            elif stat_lower == 'hr/9':
+                stat_key = 'hr9'
+                stat_label = 'HR/9'
+            elif stat_lower == 'bb/9':
+                stat_key = 'bb9'
+                stat_label = 'BB/9'
+            elif stat_lower == 'so/9':
+                stat_key = 'so9'
+                stat_label = 'SO/9'
+            else:
+                stat_key = stat_lower.replace('-', '_').replace('/', '_')
+                stat_label = stat.upper()
+
+            if stat_key in stat_mapping:
+                stat_list.append((stat_label, stat_key))
+    else:
+        # Default stats - only rate stats and plus stats, no cumulative
+        if player_type == 'pitcher':
+            stat_list = [
+                ('ERA', 'era'), ('WHIP', 'whip'), ('FIP', 'fip'),
+                ('ERA+', 'era_plus'), ('W-L%', 'w_l_pct'),
+                ('H/9', 'h9'), ('HR/9', 'hr9'), ('BB/9', 'bb9'),
+                ('SO/9', 'so9'), ('SO/BB', 'so_bb')
+            ]
+        else:
+            stat_list = [
+                ('BA', 'ba'), ('OBP', 'obp'), ('SLG', 'slg'),
+                ('OPS', 'ops'), ('OPS+', 'ops_plus')
+            ]
+
+    # Cumulative stats that need to be normalized
+    cumulative_stats = {'r', 'h', 'doubles', 'triples', 'hr', 'rbi', 'sb', 'cs', 'bb', 'so', 'tb', 'hbp', 'sh', 'sf', 'ibb',
+                        'w', 'l', 'gs', 'gf', 'cg', 'sho', 'sv', 'er', 'hbp', 'bk', 'wp'}
+
+    lower_is_better = {'era', 'fip', 'whip', 'h9', 'bb9'}
+
+    # Get normalization factor
+    if player_type == 'hitter':
+        players_used = avg_dict.get('bat_count', 1)
+    else:
+        players_used = avg_dict.get('pitcher_count', 1)
+
+    # Print header
+    click.echo(f"\n{player_name} vs {comparison_name} ({year})")
+    click.echo("=" * 80)
+
+    # Calculate column widths
+    stat_col_width = max(len(label) for label, _ in stat_list)
+    player_col_width = len(player_name)
+    avg_col_width = len(comparison_name)
+
+    # Print column headers
+    header = f"{'Stat'.ljust(stat_col_width)}  {player_name.ljust(player_col_width)}  {comparison_name.ljust(avg_col_width)}"
+    click.echo(header)
+    click.echo("-" * len(header))
+
+    # Green color codes
+    green = '\x1b[32m'
+    bold = '\x1b[1m'
+    italic = '\x1b[3m'
+    reset = '\x1b[0m'
+
+    # Print each stat
+    for stat_label, stat_key in stat_list:
+        player_val = player_dict.get(stat_key)
+        avg_key = stat_mapping.get(stat_key)
+        avg_val = avg_dict.get(avg_key) if avg_key else None
+
+        # Normalize cumulative stats
+        if avg_val is not None and stat_key in cumulative_stats and players_used > 0:
+            try:
+                avg_val = float(avg_val) / players_used
+            except (ValueError, TypeError):
+                pass
+
+        player_str = format_stat_value(player_val) if player_val is not None else 'N/A'
+        avg_str = format_stat_value(avg_val) if avg_val is not None else 'N/A'
+
+        player_formatted = player_str
+
+        # Determine if player is above average (highlight in green)
+        if player_val is not None and avg_val is not None and player_str != 'N/A' and avg_str != 'N/A':
+            try:
+                player_float = float(player_val)
+                avg_float = float(avg_val)
+
+                if stat_key in lower_is_better:
+                    if player_float < avg_float:
+                        player_formatted = f"{green}{bold}{italic}{player_str}{reset}"
+                else:
+                    if player_float > avg_float:
+                        player_formatted = f"{green}{bold}{italic}{player_str}{reset}"
+            except (ValueError, TypeError):
+                pass
+
+        player_display_len = len(player_str)
+        avg_display_len = len(avg_str)
+
+        line = f"{stat_label.ljust(stat_col_width)}  {player_formatted}{' ' * (player_col_width - player_display_len)}  {avg_str}{' ' * (avg_col_width - avg_display_len)}"
+        click.echo(line)
+
+    click.echo()
+
+def compare_to_team(cursor, player_name, stats, year):
+    """Compare a player's stats to their team average"""
+    pitcher_matches, hitter_matches = find_player(cursor, player_name)
+
+    if not pitcher_matches and not hitter_matches:
+        click.echo(f"Error: No players found matching '{player_name}'")
+        return
+
+    if pitcher_matches and hitter_matches:
+        click.echo("Error: Two-way players not supported for team comparison")
+        return
+
+    player_type = 'pitcher' if pitcher_matches else 'hitter'
+    matches = pitcher_matches if pitcher_matches else hitter_matches
+
+    # Use render_player with comparison_mode='team'
+    render_player(cursor, matches, player_type, stats, year, comparison_mode='team')
+
+def compare_to_league(cursor, player_name, stats, year):
+    """Compare a player's stats to league average"""
+    pitcher_matches, hitter_matches = find_player(cursor, player_name)
+
+    if not pitcher_matches and not hitter_matches:
+        click.echo(f"Error: No players found matching '{player_name}'")
+        return
+
+    if pitcher_matches and hitter_matches:
+        click.echo("Error: Two-way players not supported for league comparison")
+        return
+
+    player_type = 'pitcher' if pitcher_matches else 'hitter'
+    matches = pitcher_matches if pitcher_matches else hitter_matches
+
+    # Use render_player with comparison_mode='league'
+    render_player(cursor, matches, player_type, stats, year, comparison_mode='league')
 
 def compare_players(cursor, player1_name, player2_name, stats, year):
     """Compare two players' stats side by side"""
@@ -733,7 +1170,7 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
                 ('OPS', 'ops'), ('OPS+', 'ops_plus')
             ]
 
-    lower_is_better = {'era'}
+    lower_is_better = {'era', 'fip', 'whip', 'h9', 'bb9'}
 
     # Print header
     click.echo(f"\n{player1_full_name} vs {player2_full_name} ({year_filter})")
@@ -802,14 +1239,35 @@ def compare_players(cursor, player1_name, player2_name, stats, year):
 @click.option('-s', '--stats', multiple=True, help='Specific stats to display (e.g., war era)')
 @click.option('-y', '--year', help='Filter by year (e.g., 2022 or 22)')
 @click.option('-c', '--compare', help='Compare with another player')
-def main(player_name, stats, year, compare):
+@click.option('-ct', '--compare-team', is_flag=True, help='Compare player to team average')
+@click.option('-cl', '--compare-league', is_flag=True, help='Compare player to league average')
+def main(player_name, stats, year, compare, compare_team, compare_league):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        # Validate that conflicting flags aren't used together
+        if sum([bool(compare), compare_team, compare_league]) > 1:
+            click.echo("Error: Cannot use -c, -ct, and -cl together. Choose one comparison mode.")
+            return
+
         # If compare flag is set, use comparison mode
         if compare:
             compare_players(cursor, player_name, compare, stats, year)
+            cursor.close()
+            conn.close()
+            return
+
+        # If compare-team flag is set, compare to team average
+        if compare_team:
+            compare_to_team(cursor, player_name, stats, year)
+            cursor.close()
+            conn.close()
+            return
+
+        # If compare-league flag is set, compare to league average
+        if compare_league:
+            compare_to_league(cursor, player_name, stats, year)
             cursor.close()
             conn.close()
             return

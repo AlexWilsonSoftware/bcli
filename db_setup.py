@@ -110,9 +110,104 @@ def create_tables():
         CREATE INDEX IF NOT EXISTS idx_hitter_year ON hitter_stats (year)
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS team_hitter_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER,
+            tm TEXT,
+            bat_count INTEGER,
+            bat_age REAL,
+            r_per_g REAL,
+            g INTEGER,
+            pa INTEGER,
+            ab INTEGER,
+            r INTEGER,
+            h INTEGER,
+            doubles INTEGER,
+            triples INTEGER,
+            hr INTEGER,
+            rbi INTEGER,
+            sb INTEGER,
+            cs INTEGER,
+            bb INTEGER,
+            so INTEGER,
+            ba REAL,
+            obp REAL,
+            slg REAL,
+            ops REAL,
+            ops_plus INTEGER,
+            tb INTEGER,
+            gdp INTEGER,
+            hbp INTEGER,
+            sh INTEGER,
+            sf INTEGER,
+            ibb INTEGER,
+            lob INTEGER
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_team_hitter_year ON team_hitter_stats (year)
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_team_hitter_tm ON team_hitter_stats (tm)
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS team_pitcher_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER,
+            tm TEXT,
+            pitcher_count INTEGER,
+            p_age REAL,
+            ra_per_g REAL,
+            w INTEGER,
+            l INTEGER,
+            w_l_pct REAL,
+            era REAL,
+            g INTEGER,
+            gs INTEGER,
+            gf INTEGER,
+            cg INTEGER,
+            t_sho INTEGER,
+            c_sho INTEGER,
+            sv INTEGER,
+            ip REAL,
+            h INTEGER,
+            r INTEGER,
+            er INTEGER,
+            hr INTEGER,
+            bb INTEGER,
+            ibb INTEGER,
+            so INTEGER,
+            hbp INTEGER,
+            bk INTEGER,
+            wp INTEGER,
+            bf INTEGER,
+            era_plus INTEGER,
+            fip REAL,
+            whip REAL,
+            h9 REAL,
+            hr9 REAL,
+            bb9 REAL,
+            so9 REAL,
+            so_w REAL,
+            lob INTEGER
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_team_pitcher_year ON team_pitcher_stats (year)
+    ''')
+
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_team_pitcher_tm ON team_pitcher_stats (tm)
+    ''')
+
     conn.commit()
     print(f"Database created at: {DB_PATH}")
-    print("Tables 'pitcher_stats' and 'hitter_stats' created successfully")
+    print("Tables 'pitcher_stats', 'hitter_stats', 'team_pitcher_stats', and 'team_hitter_stats' created successfully")
 
     cursor.close()
     conn.close()
