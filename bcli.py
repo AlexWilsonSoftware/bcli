@@ -65,59 +65,40 @@ def find_player (cursor ,name_query ):
     else :
         first_search =remove_accents (first_pattern .lower ())
         last_search =remove_accents (last_pattern .lower ())
-    if first_pattern is None :
-        pattern =f'%{last_pattern.lower()}%'
-    else :
-        pattern =f'{first_pattern.lower()}%{last_pattern.lower()}%'
 
-    cursor .execute ('''
-        SELECT * FROM pitcher_stats
-        WHERE LOWER(player) LIKE ? AND ip >= 5
-        ORDER BY year ASC, team
-    ''',(pattern ,))
-    pitcher_matches =cursor .fetchall ()
+    cursor .execute ('SELECT * FROM pitcher_stats WHERE ip >= 5 ORDER BY year ASC, team')
+    all_pitchers =cursor .fetchall ()
 
-    cursor .execute ('''
-        SELECT * FROM hitter_stats
-        WHERE LOWER(player) LIKE ? AND ab >= 5
-        ORDER BY year ASC, team
-    ''',(pattern ,))
-    hitter_matches =cursor .fetchall ()
+    cursor .execute (f"SELECT * FROM pitcher_stats LIMIT 1")
+    column_names =[desc [0 ]for desc in cursor .description ]
+    player_col_idx =column_names .index ('player')
 
-    if not pitcher_matches and not hitter_matches :
-        cursor .execute ('SELECT * FROM pitcher_stats WHERE ip >= 5 ORDER BY year ASC, team')
-        all_pitchers =cursor .fetchall ()
+    pitcher_matches =[]
+    for row in all_pitchers :
+        normalized_name =remove_accents (row [player_col_idx ].lower ())
+        if first_search is None :
+            if last_search in normalized_name :
+                pitcher_matches .append (row )
+        else :
+            if normalized_name .startswith (first_search )and last_search in normalized_name :
+                pitcher_matches .append (row )
 
-        cursor .execute (f"SELECT * FROM pitcher_stats LIMIT 1")
-        column_names =[desc [0 ]for desc in cursor .description ]
-        player_col_idx =column_names .index ('player')
+    cursor .execute ('SELECT * FROM hitter_stats WHERE ab >= 5 ORDER BY year ASC, team')
+    all_hitters =cursor .fetchall ()
 
-        pitcher_matches =[]
-        for row in all_pitchers :
-            normalized_name =remove_accents (row [player_col_idx ].lower ())
-            if first_search is None :
-                if last_search in normalized_name :
-                    pitcher_matches .append (row )
-            else :
-                if normalized_name .startswith (first_search )and last_search in normalized_name :
-                    pitcher_matches .append (row )
+    cursor .execute (f"SELECT * FROM hitter_stats LIMIT 1")
+    column_names =[desc [0 ]for desc in cursor .description ]
+    player_col_idx =column_names .index ('player')
 
-        cursor .execute ('SELECT * FROM hitter_stats WHERE ab >= 5 ORDER BY year ASC, team')
-        all_hitters =cursor .fetchall ()
-
-        cursor .execute (f"SELECT * FROM hitter_stats LIMIT 1")
-        column_names =[desc [0 ]for desc in cursor .description ]
-        player_col_idx =column_names .index ('player')
-
-        hitter_matches =[]
-        for row in all_hitters :
-            normalized_name =remove_accents (row [player_col_idx ].lower ())
-            if first_search is None :
-                if last_search in normalized_name :
-                    hitter_matches .append (row )
-            else :
-                if normalized_name .startswith (first_search )and last_search in normalized_name :
-                    hitter_matches .append (row )
+    hitter_matches =[]
+    for row in all_hitters :
+        normalized_name =remove_accents (row [player_col_idx ].lower ())
+        if first_search is None :
+            if last_search in normalized_name :
+                hitter_matches .append (row )
+        else :
+            if normalized_name .startswith (first_search )and last_search in normalized_name :
+                hitter_matches .append (row )
 
     return pitcher_matches ,hitter_matches 
 
