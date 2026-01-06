@@ -1938,7 +1938,7 @@ def render_matchup_stats (batter_name ,pitcher_name ,stats_list ,year_filter ):
 
 @click .command ()
 @click .argument ('player_name')
-@click .option ('-s','--stats',multiple =True ,help ='Specific stats to display (e.g., war era)')
+@click .option ('-s','--stats',help ='Specific stats to display (e.g., -s "war hr rbi" or -s "war,hr,rbi")')
 @click .option ('-y','--year',help ='Filter by year (e.g., 2022 or 22)')
 @click .option ('-c','--compare',help ='Compare with another player')
 @click .option ('-ct','--compare-team',is_flag =True ,help ='Compare player to team average')
@@ -1947,13 +1947,18 @@ def render_matchup_stats (batter_name ,pitcher_name ,stats_list ,year_filter ):
 @click .option ('-p','--platoon',is_flag =True ,help ='Show platoon splits (vs LHB/RHB or vs LHP/RHP)')
 def main (player_name ,stats ,year ,compare ,compare_team ,compare_league ,versus ,platoon ):
     """Main CLI entry point for baseball stats lookup"""
+    if stats:
+        stats = tuple(stats.replace(',', ' ').split())
+    else:
+        stats = ()
+
     try :
         conn =get_db_connection ()
         cursor =conn .cursor ()
 
         if sum ([bool (compare ),compare_team ,compare_league ,bool (versus ),platoon ])>1 :
             click .echo ("Error: Cannot use -c, -ct, -cl, -v, and -p together. Choose one mode.")
-            return 
+            return
 
         if platoon :
             display_platoon_splits (cursor ,player_name ,year ,stats )
