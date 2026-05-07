@@ -119,9 +119,9 @@ $ bcli l.williams
 
 ## Data Sources
 
-Stats are from Baseball Reference for the 2022-2025 seasons. The database includes:
-- 4 years of player stats (pitchers and hitters)
-- 4 years of team aggregates
+Stats are from Baseball Reference for the 2015-2025 seasons. The database includes:
+- 10 years of player stats (pitchers and hitters)
+- 10 years of team aggregates
 - League averages for each year
 
 ## Contributing
